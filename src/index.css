@@ -1,0 +1,116 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --titlebar-height: 36px;
+  }
+
+  .app-titlebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: var(--titlebar-height);
+    background-color: #0c0d10; /* Match titleBarOverlay color */
+    z-index: 9999;
+    -webkit-app-region: drag;
+    pointer-events: none; /* Let clicks pass through to native controls */
+  }
+
+  /* Global dark scrollbar for all elements - Netflix style */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #e50914 #141414;
+  }
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  *::-webkit-scrollbar-track {
+    background: #141414;
+    border-radius: 4px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: #e50914;
+    border-radius: 4px;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: #f40612;
+  }
+  *::-webkit-scrollbar-corner {
+    background: #141414;
+  }
+
+  html {
+    scrollbar-width: thin;
+    scrollbar-color: #e50914 #141414;
+  }
+  html::-webkit-scrollbar {
+    width: 10px;
+  }
+  html::-webkit-scrollbar-track {
+    background: #141414;
+    border-radius: 4px;
+  }
+  html::-webkit-scrollbar-thumb {
+    background: #e50914;
+    border-radius: 4px;
+  }
+  html::-webkit-scrollbar-thumb:hover {
+    background: #f40612;
+  }
+}
+
+@layer utilities {
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Custom scrollbar for dark theme - Netflix red */
+  .scrollbar-custom {
+    scrollbar-width: thin;
+    scrollbar-color: #e50914 #141414;
+  }
+  .scrollbar-custom::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .scrollbar-custom::-webkit-scrollbar-track {
+    background: #141414;
+    border-radius: 4px;
+  }
+  .scrollbar-custom::-webkit-scrollbar-thumb {
+    background: #e50914;
+    border-radius: 4px;
+  }
+  .scrollbar-custom::-webkit-scrollbar-thumb:hover {
+    background: #f40612;
+  }
+
+  /* Netflix red accent scrollbar */
+  .scrollbar-netflix {
+    scrollbar-width: thin;
+    scrollbar-color: #e50914 #0a0a0a;
+  }
+  .scrollbar-netflix::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  .scrollbar-netflix::-webkit-scrollbar-track {
+    background: #0a0a0a;
+    border-radius: 4px;
+  }
+  .scrollbar-netflix::-webkit-scrollbar-thumb {
+    background: #e50914;
+    border-radius: 4px;
+  }
+  .scrollbar-netflix::-webkit-scrollbar-thumb:hover {
+    background: #f40612;
+  }
+}
