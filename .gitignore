@@ -54,3 +54,6 @@ release/
 *.msi
 *.app
 *.asar
+
+# Nested repository
+cinema/
