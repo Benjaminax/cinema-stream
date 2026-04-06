@@ -7,6 +7,7 @@ import { searchMedia, getImageUrl } from '../api/tmdb';
 import { addRecentlyWatched } from '../utils/recentlyWatched';
 import { useNetworkStatus } from '../hooks/useNetworkStatus';
 import NoInternetConnection from '../components/offline/NoInternetConnection';
+import { playMediaWithTracking } from '../utils/mediaPlayback';
 
 const Search: React.FC = () => {
   const [query, setQuery] = useState('');
@@ -118,32 +119,37 @@ const Search: React.FC = () => {
     setIsModalOpen(true);
   };
 
-  const handlePlay = (item: TMDBResult | Episode) => {
+  const handlePlay = async (item: TMDBResult | Episode) => {
     if (!item) return;
     saveRecentSearch(query); // Save search when played
 
     // Check if it's an episode with a file path
     if ('file_path' in item && item.file_path) {
       // Play the episode file directly
-      if (window.electronAPI?.openFile) {
-        // Note: selectedItem in Search might be the show context if coming from a nested detail call
-        const seriesTitle = (item as any).seriesTitle || (selectedItem?.name || selectedItem?.title || 'Unknown Series');
+      const seriesTitle = (item as any).seriesTitle || (selectedItem?.name || selectedItem?.title || 'Unknown Series');
 
-        addRecentlyWatched({
-          id: item.file_path,
-          title: `${seriesTitle} - ${item.title}`,
-          type: 'episode',
-          path: item.file_path,
-          season: item.season,
-          episode: item.episode,
-          poster_path: selectedItem?.local_poster_path || (selectedItem?.poster_path ? getImageUrl(selectedItem.poster_path, 'w500') : undefined),
-          backdrop_path: selectedItem?.local_backdrop_path || (selectedItem?.backdrop_path ? getImageUrl(selectedItem.backdrop_path, 'original') : undefined),
-          still_path: (item as any).local_still_path || (item as any).still_path
-        });
+      addRecentlyWatched({
+        id: item.file_path,
+        title: `${seriesTitle} - ${item.title}`,
+        type: 'episode',
+        path: item.file_path,
+        season: item.season,
+        episode: item.episode,
+        poster_path: selectedItem?.local_poster_path || (selectedItem?.poster_path ? getImageUrl(selectedItem.poster_path, 'w500') : undefined),
+        backdrop_path: selectedItem?.local_backdrop_path || (selectedItem?.backdrop_path ? getImageUrl(selectedItem.backdrop_path, 'original') : undefined),
+        still_path: (item as any).local_still_path || (item as any).still_path
+      });
 
+      // Use enhanced media playback for episodes
+      const result = await playMediaWithTracking(item.file_path, {
+        startTime: (item as any).progress,
+        fullscreen: true,
+        useVLCTracking: true
+      });
+      
+      if (!result.success && window.electronAPI?.openFile) {
+        // Fallback to basic openFile
         window.electronAPI.openFile(item.file_path, (item as any).progress);
-      } else {
-        console.log('Play episode file:', item.file_path);
       }
     } else if ('local_path' in item && item.local_path) {
       // For series/movies with local path, add to recently watched and open
@@ -159,15 +165,28 @@ const Search: React.FC = () => {
         backdrop_path: backdropPath
       });
 
-      if (window.electronAPI?.openFile) {
+      // Use enhanced media playback for local content
+      const result = await playMediaWithTracking(item.local_path, {
+        startTime: (item as any).progress,
+        fullscreen: true,
+        useVLCTracking: true
+      });
+      
+      if (!result.success && window.electronAPI?.openFile) {
+        // Fallback to basic openFile
         window.electronAPI.openFile(item.local_path, (item as any).progress);
       }
     } else {
-      // For TMDB items without local files, open modal with trailer
-      setSelectedItem(item as TMDBResult);
-      setAutoPlayTrailer(true); // Auto-play trailer when play button is clicked
-      setIsModalOpen(true);
-      console.log('Play movie/show:', (item as TMDBResult).title || (item as TMDBResult).name);
+      const isEpisode = 'season' in item && 'episode' in item;
+      const title = isEpisode
+        ? ((item as any).seriesTitle || selectedItem?.name || selectedItem?.title || item.title || '')
+        : ((item as TMDBResult).title || (item as TMDBResult).name || '');
+      const searchUrl = `https://yflix.to/browser?keyword=${title.trim().replace(/\s+/g, '+')}`;
+      if (window.electronAPI?.openExternal) {
+        window.electronAPI.openExternal(searchUrl);
+      } else {
+        window.open(searchUrl, '_blank');
+      }
     }
   };
 
@@ -418,6 +437,7 @@ const Search: React.FC = () => {
             console.error('Error handling play episode from modal:', error);
           }
         }}
+        forceFetchEpisodes={true}
       />
         </div>
       )}

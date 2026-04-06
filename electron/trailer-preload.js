@@ -2,6 +2,11 @@
 (function () {
     console.log('🎬 Hardened Cinema Engine: Booting...');
 
+    // Allow a special "preserve UI" mode — when the webview URL includes `cinema_preserve_ui=1`
+    // the preload will NOT strip YouTube site chrome so the native YouTube UI is visible.
+    const preserveUI = typeof window !== 'undefined' && /cinema_preserve_ui=1/.test(window.location.search || '');
+    if (preserveUI) console.log('🎬 Hardened Cinema Engine: preserveUI mode — keeping full YouTube UI');
+
     // 1. Extreme Spoofing - Wipe automation footprints
     try {
         Object.defineProperty(navigator, 'webdriver', { get: () => false });
@@ -10,6 +15,8 @@
     } catch (e) { }
 
     const injectStyles = () => {
+        if (preserveUI) return; // Do not inject aggressive CSS when the full YouTube UI is requested
+
         const css = `
             /* Initial blackout to prevent site flashes */
             html, body {
@@ -18,33 +25,58 @@
                 overflow: hidden !important;
             }
 
-            /* Aggressively hide all YouTube site Chrome & Embed Overlays */
-            #masthead-container, 
+            /* Aggressively hide all YouTube site Chrome & Embed Overlays (keep only the player and its controls) */
+            /* page chrome */
+            #masthead-container,
             #masthead,
+            #container.ytd-masthead,
+            .ytd-masthead,
+            #guide,
             #sidebar,
             #secondary,
+            #related,
+            ytd-watch-next-secondary-results-renderer,
+            ytd-watch-flexy ytd-watch-next-secondary-results-renderer,
             #comments,
+            ytd-comments,
             #footer,
-            #guide,
-            #header,
             #chat,
-            .ytd-masthead,
             .ytd-page-manager,
             ytd-popup-container,
             tp-yt-iron-overlay-backdrop,
-            .ytp-chrome-top,           /* Embed title and share button */
-            .ytp-show-cards-title,      /* "More videos" title */
-            .ytp-pause-overlay,         /* Suggestions when paused */
-            .ytp-ce-element,            /* End screen elements */
+
+            /* end screens / suggestions / overlays */
+            .ytp-chrome-top,
+            .ytp-show-cards-title,
+            .ytp-pause-overlay,
+            .ytp-ce-element,
             .ytp-ce-video,
             .ytp-ce-channel,
             .ytp-ce-playlist,
             .ytp-ce-website,
             .ytp-ce-merchandise,
-            .ytp-watermark,             /* YouTube watermark */
-            .ytp-youtube-button,        /* YouTube logo in bottom right */
-            .ytp-gradient-top,          /* Dark gradient at the top */
-            .ytp-gradient-bottom {      /* Dark gradient at the bottom */
+            .ytp-watermark,
+            .ytp-youtube-button,
+            .ytp-gradient-top,
+            .ytp-gradient-bottom,
+            .ytp-upnext,
+            .ytp-upnext-overlay,
+            .ytp-cued-thumbnail-overlay,
+            .ytp-thumbnail-overlay,
+            .ytp-cards-button,
+            .ytp-cards-teaser,
+            .ytp-paid-content-overlay,
+
+            /* related/compact lists */
+            ytd-compact-video-renderer,
+            ytd-compact-promoted-video-renderer,
+            ytd-compact-playlist-renderer,
+            ytd-compact-autoplay-renderer,
+            #player-ads,
+            .iv-drawer,
+            .ad-interrupting,
+            .ytp-ad-overlay-container,
+            .ytp-ad-skip-button-slot {
                 display: none !important;
                 visibility: hidden !important;
                 opacity: 0 !important;
@@ -188,7 +220,7 @@
     injectStyles();
 
     const interval = setInterval(() => {
-        handlePlayback();
+        if (!preserveUI) handlePlayback();
         // Force layout check
         window.dispatchEvent(new Event('resize'));
     }, 500); // Faster check for better responsiveness

@@ -2,6 +2,8 @@
   "name": "cinestream",
   "version": "1.0.0",
   "description": "Premium Desktop Media Streaming Platform",
+  "author": "Benjamin",
+  "publisher": "Paradox Studios",
   "main": "dist-electron/main.js",
   "homepage": "./",
   "scripts": {
@@ -15,16 +17,20 @@
     "dist": "npm run build && electron-builder",
     "bundle-vlc": "node scripts/bundle-vlc.js",
     "dist-with-vlc": "npm run bundle-vlc && npm run build && electron-builder",
+    "bundle": "npm run bundle-vlc && npm run build",
+    "test-youtube": "electron . --test-youtube",
     "generate-icon": "node scripts/generate-icon.js",
     "dist:with-icon": "npm run build && npm run generate-icon && electron-builder",
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
+    "express": "^5.2.1",
     "lucide-react": "^0.294.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
   },
   "devDependencies": {
+    "@types/express": "^5.0.6",
     "@types/react": "^18.2.15",
     "@types/react-dom": "^18.2.7",
     "@typescript-eslint/eslint-plugin": "^6.0.0",
@@ -32,7 +38,7 @@
     "@vitejs/plugin-react": "^4.0.3",
     "autoprefixer": "^10.4.14",
     "concurrently": "^8.2.0",
-    "electron": "^25.0.0",
+    "electron": "^40.4.1",
     "electron-builder": "^24.0.0",
     "eslint": "^8.45.0",
     "eslint-plugin-react-hooks": "^4.6.0",
@@ -49,19 +55,28 @@
   "build": {
     "appId": "com.cinestream.app",
     "productName": "CINESTREAM",
+    "copyright": "Copyright © 2026 Paradox Studios",
     "directories": {
       "output": "dist"
     },
+    "asarUnpack": [
+      "dist-electron/**/*"
+    ],
     "extraResources": [
       {
         "from": "resources/vlc",
         "to": "vlc",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "files": [
       "dist-electron/**/*",
       "dist/**/*",
+      "public/**/*",
+      "resources/**/*",
+      "src/assets/**/*",
       "node_modules/**/*"
     ],
     "mac": {
@@ -70,7 +85,8 @@
     "win": {
       "target": "nsis",
       "icon": "public/icon.ico",
-      "requestedExecutionLevel": "requireAdministrator"
+      "requestedExecutionLevel": "asInvoker",
+      "publisherName": "Paradox Studios"
     },
     "nsis": {
       "oneClick": false,

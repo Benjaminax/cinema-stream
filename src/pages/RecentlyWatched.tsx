@@ -1,6 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { getRecentlyWatched, removeRecentlyWatched, clearRecentlyWatched, addRecentlyWatched } from '../utils/recentlyWatched';
+import { playMediaWithTracking } from '../utils/mediaPlayback';
 import { Play, Trash2, Clock, ChevronRight, History } from 'lucide-react';
+
+const PLACEHOLDER = new URL('/placeholder.png', import.meta.url).href;
 
 const RecentlyWatched: React.FC = () => {
   const [items, setItems] = useState(() => getRecentlyWatched());
@@ -14,10 +17,23 @@ const RecentlyWatched: React.FC = () => {
 
   const onPlay = async (it: any) => {
     try {
-      if (window.electronAPI?.openFile) {
-        // Update timestamp and move to top immediately
-        addRecentlyWatched(it);
-        await window.electronAPI.openFile(it.path, it.progress);
+      console.log('RecentlyWatched: play requested', it);
+
+      // Update timestamp and move to top immediately
+      addRecentlyWatched(it);
+
+      // Preferred: use enhanced playback helper (handles VLC and fallbacks)
+      const result = await playMediaWithTracking(it.path || it.local_path || it.file_path, {
+        startTime: it.progress,
+        fullscreen: true,
+        useVLCTracking: true
+      });
+
+      if (!result.success) {
+        console.warn('playMediaWithTracking failed, attempting fallback openFile', result.error);
+        if (window.electronAPI?.openFile) {
+          await window.electronAPI.openFile(it.path || it.local_path || it.file_path, it.progress);
+        }
       }
     } catch (e) {
       console.error('Error opening file from RecentlyWatched:', e);
@@ -118,7 +134,7 @@ const RecentlyWatched: React.FC = () => {
                   onClick={() => onPlay(it)}
                 >
                   <img
-                    src={it.still_path || it.poster_path || '/placeholder.png'}
+                    src={it.still_path || it.poster_path || PLACEHOLDER}
                     alt={it.title}
                     className="w-full h-full object-cover"
                   />

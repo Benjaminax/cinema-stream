@@ -5,7 +5,8 @@ import { LocalMediaFile } from '../utils/localMedia';
 import { searchMedia, getImageUrl, getBackdropUrl, getIMDbRating, getDetails } from '../api/tmdb';
 import DetailsModal from '../components/media/DetailsModal';
 import { libraryCache } from '../utils/libraryCache';
-import { addRecentlyWatched, getResumeItemByParent } from '../utils/recentlyWatched';
+import { addRecentlyWatched, getRecentlyWatched, getResumeItemByParent, normalizePath } from '../utils/recentlyWatched';
+import { playMediaWithTracking } from '../utils/mediaPlayback';
 import { GENRE_NAME_MAP } from '../utils/genrePreferences';
 import '../types/electron';
 
@@ -45,8 +46,8 @@ const LocalSeries: React.FC = () => {
             /^t\s*\d+$/i, // Tome / Saison
             /^book\s*\d+$/i
         ];
-        return seasonPatterns.some(pattern => pattern.test(name));
-    };
+        return seasonPatterns.some((re) => re.test(name.trim()));
+    }; 
 
     useEffect(() => {
         const init = async () => {
@@ -63,9 +64,15 @@ const LocalSeries: React.FC = () => {
                 return;
             }
 
+            const isOnline = typeof window !== 'undefined' ? (window.navigator?.onLine ?? true) : true;
+
             if (force) {
-                console.log('🔄 Forced refresh: clearing series cache');
-                libraryCache.clearSeries();
+                if (!isOnline) {
+                    console.log('🔄 Forced refresh requested but offline — skipping cache clearing and image re-fetch. Will only rescan folders.');
+                } else {
+                    console.log('🔄 Forced refresh: clearing series cache');
+                    libraryCache.clearSeries();
+                }
             }
 
             setLoading(true);
@@ -77,7 +84,8 @@ const LocalSeries: React.FC = () => {
             let files: LocalMediaFile[] = [];
             try {
                 files = await window.electronAPI.scanDirectory(seriesFolderPath);
-            } catch {
+            } catch (error) {
+                console.error('Failed to scan series directory:', error);
                 setSeries([]);
                 setLoading(false);
                 return;
@@ -93,9 +101,20 @@ const LocalSeries: React.FC = () => {
                     const cached = libraryCache.getSeries(seriesDir.path);
                     if (cached) {
                         console.log('📦 Found series in cache:', seriesDir.name);
-                        // Ensure images are cached
-                        await libraryCache.ensureImagesCached(seriesDir.path, 'series');
-                        return cached;
+                        // Call setSeries and allow image fetch only when online. Force image refresh if requested.
+                        await libraryCache.setSeries(seriesDir.path, cached, { allowImageFetch: isOnline, forceImageRefresh: force && isOnline });
+                        return { ...cached };
+                    }
+
+                    // If offline, skip TMDB lookups and return a minimal local entry
+                    if (!isOnline) {
+                        console.log('📴 Offline - skipping TMDB lookup for series:', seriesDir.name);
+                        return {
+                            id: Date.now(),
+                            name: seriesDir.name,
+                            local_path: seriesDir.path,
+                            modified_date: seriesDir.modified
+                        } as TMDBResult;
                     }
 
                     // Search TMDB if not cached
@@ -131,8 +150,8 @@ const LocalSeries: React.FC = () => {
                             modified_date: seriesDir.modified
                         };
 
-                        // Save to cache
-                        await libraryCache.setSeries(seriesDir.path, seriesData);
+                        // Save to cache (only fetch images when online). If the user requested a refresh, force image refresh as well.
+                        await libraryCache.setSeries(seriesDir.path, seriesData, { allowImageFetch: isOnline, forceImageRefresh: force && isOnline });
 
                         return seriesData;
                     }
@@ -160,7 +179,15 @@ const LocalSeries: React.FC = () => {
                 }
             }
 
-            setSeries(Array.from(groupedSeries.values()));
+                        // Ensure all series are re-cached to trigger image caching
+                        const allowFetch = typeof window !== 'undefined' ? (window.navigator?.onLine ?? true) : true;
+                        await Promise.all(Array.from(groupedSeries.values())
+                            .filter(s => typeof s.local_path === 'string')
+                            .map(s => libraryCache.setSeries(s.local_path as string, s, { allowImageFetch: allowFetch })));
+
+                        // Reload series from cache and update state so UI gets updated image paths
+                        const updatedSeries = Object.values(libraryCache["data"]?.series || {});
+                        setSeries(updatedSeries);
         } catch (error) {
             console.error('Error loading local series:', error);
             setSeries([]);
@@ -485,27 +512,46 @@ const LocalSeries: React.FC = () => {
                             setIsModalOpen(false);
                             setSelectedItem(null);
                         }}
-                        onPlay={(series) => {
+                        onPlay={async (series) => {
                             if (series.local_path) {
                                 // Find most recently watched item in this series folder
                                 const resumeItem = getResumeItemByParent(series.local_path);
 
                                 if (resumeItem) {
-                                    console.log('📌 Resuming series from last episode:', resumeItem.title, 'at', resumeItem.progress);
-                                    window.electronAPI?.openFile(resumeItem.path, resumeItem.progress);
+                                    const resumeProgress = resumeItem.progress ?? 0;
+                                    console.log('📌 Resuming series from last episode:', resumeItem.title, 'at', resumeProgress);
 
-                                    // Re-add to recently watched to update 'at' timestamp
+                                    // Write tracking immediately on play click
                                     addRecentlyWatched({
-                                        ...resumeItem
+                                        ...resumeItem,
+                                        progress: resumeProgress
                                     });
+                                    
+                                    // Use enhanced media playback for series resumption
+                                    const result = await playMediaWithTracking(resumeItem.path, {
+                                        startTime: resumeProgress,
+                                        fullscreen: true,
+                                        useVLCTracking: true
+                                    });
+                                    
+                                    if (!result.success && window.electronAPI?.openFile) {
+                                        // Fallback to basic openFile
+                                        window.electronAPI.openFile(resumeItem.path, resumeProgress);
+                                    }
                                 } else {
                                     // Fallback: Just open the folder or try to find first episode (folder opening is default)
-                                    window.electronAPI?.openFile(series.local_path);
+                                    if (window.electronAPI?.openFile) {
+                                        window.electronAPI.openFile(series.local_path);
+                                    }
                                 }
                             }
                         }}
-                        onPlayEpisode={(episode) => {
+                        onPlayEpisode={async (episode) => {
                             if (episode.path) {
+                                const normalizedPath = normalizePath(episode.path);
+                                const existingResume = getRecentlyWatched().find(item => item.path === normalizedPath);
+                                const resumeProgress = existingResume?.progress ?? episode.progress ?? 0;
+
                                 // Determine poster path
                                 const posterPath = selectedItem?.local_poster_path || (selectedItem?.poster_path ? getImageUrl(selectedItem.poster_path, 'w500') : undefined);
                                 const backdropPath = selectedItem?.local_backdrop_path || (selectedItem?.backdrop_path ? getBackdropUrl(selectedItem.backdrop_path, 'w1280') : undefined);
@@ -521,10 +567,21 @@ const LocalSeries: React.FC = () => {
                                     episode: episode.episode,
                                     poster_path: posterPath,
                                     backdrop_path: backdropPath,
-                                    still_path: stillPath
+                                    still_path: stillPath,
+                                    progress: resumeProgress
                                 });
 
-                                window.electronAPI?.openFile(episode.path, episode.progress);
+                                // Use enhanced media playback for episodes
+                                const result = await playMediaWithTracking(episode.path, {
+                                    startTime: resumeProgress,
+                                    fullscreen: true,
+                                    useVLCTracking: true
+                                });
+                                
+                                if (!result.success && window.electronAPI?.openFile) {
+                                    // Fallback to basic openFile
+                                    window.electronAPI.openFile(episode.path, resumeProgress);
+                                }
                             }
                         }}
                         hideSimilar={true}

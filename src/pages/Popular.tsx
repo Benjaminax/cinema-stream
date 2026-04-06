@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { RefreshCw, TrendingUp, Calendar, Play, Clock, Star, Newspaper, Heart, Info, Tv, ChevronLeft, ChevronRight } from 'lucide-react';
 import MediaRow from '../components/media/MediaRow';
 import DetailsModal from '../components/media/DetailsModal';
-import { TMDBResult, MediaDetails } from '../types/media';
+import { TMDBResult, MediaDetails, Episode } from '../types/media';
 import { getTrending, getDetails, getUpcomingMovies, getUpcomingTV, getPopularMovies, getTopRatedMovies, getDiscover } from '../api/tmdb';
 import { analyzeUserGenres, filterByGenres, scanLocalLibrary } from '../utils/genreAnalysis';
 import {
@@ -14,6 +14,7 @@ import {
 import { getMyList } from '../utils/myList';
 import { useNetworkStatus } from '../hooks/useNetworkStatus';
 import NoInternetConnection from '../components/offline/NoInternetConnection';
+import { playMediaWithTracking } from '../utils/mediaPlayback';
 
 // News API types
 interface NewsArticle {
@@ -139,19 +140,32 @@ const Popular: React.FC = () => {
 
       for (const query of searchQueries.slice(0, 3)) { // Limit to 3 queries to avoid rate limits
         try {
-          const response = await fetch(
-            `${NEWS_API_BASE_URL}/everything?q=${encodeURIComponent(query)}&sortBy=publishedAt&language=en&pageSize=10&apiKey=${NEWS_API_KEY}`
-          );
+          let dataArticles: NewsArticle[] = [];
 
-          if (!response.ok) {
-            console.warn(`News API error for query "${query}":`, response.status);
-            continue;
+          if ((window as any).electronAPI?.fetchNews) {
+            // Use main-process proxy to avoid CORS/file:// origin issues in packaged EXE
+            const res = await (window as any).electronAPI.fetchNews(query);
+            if (res && Array.isArray(res.articles)) {
+              dataArticles = res.articles as NewsArticle[];
+            } else {
+              console.warn('Main-process news proxy returned unexpected data for', query, res);
+            }
+          } else {
+            const response = await fetch(
+              `${NEWS_API_BASE_URL}/everything?q=${encodeURIComponent(query)}&sortBy=publishedAt&language=en&pageSize=10&apiKey=${NEWS_API_KEY}`
+            );
+
+            if (!response.ok) {
+              console.warn(`News API error for query "${query}":`, response.status);
+              continue;
+            }
+
+            const data: NewsResponse = await response.json();
+            dataArticles = data.articles || [];
           }
 
-          const data: NewsResponse = await response.json();
-
           // Filter out duplicates and add to results
-          const uniqueArticles = data.articles.filter(article =>
+          const uniqueArticles = (dataArticles || []).filter(article =>
             article.title &&
             !usedTitles.has(article.title) &&
             article.urlToImage && // Only articles with images
@@ -189,13 +203,39 @@ const Popular: React.FC = () => {
     setIsModalOpen(true);
   };
 
-  const handlePlay = (item: TMDBResult) => {
-    if (window.electronAPI?.openFile && item.local_path) {
-      window.electronAPI.openFile(item.local_path);
+  const handlePlay = async (item: TMDBResult | Episode) => {
+    if ('file_path' in item && item.file_path) {
+      const result = await playMediaWithTracking(item.file_path, {
+        startTime: (item as any).progress,
+        fullscreen: true,
+        useVLCTracking: true
+      });
+
+      if (!result.success && window.electronAPI?.openFile) {
+        window.electronAPI.openFile(item.file_path, (item as any).progress);
+      }
+    } else if ('local_path' in item && item.local_path) {
+      // Use enhanced media playbook with VLC tracking
+      const result = await playMediaWithTracking(item.local_path, {
+        fullscreen: true,
+        useVLCTracking: true
+      });
+      
+      if (!result.success && window.electronAPI?.openFile) {
+        // Fallback to basic openFile
+        window.electronAPI.openFile(item.local_path);
+      }
     } else {
-      console.log('Play item:', item.title || item.name);
-      setSelectedMedia(item);
-      setIsModalOpen(true);
+      const isEpisode = 'season' in item && 'episode' in item;
+      const title = isEpisode
+        ? ((item as any).seriesTitle || selectedMedia?.name || selectedMedia?.title || item.title || '')
+        : ((item as TMDBResult).title || (item as TMDBResult).name || '');
+      const searchUrl = `https://yflix.to/browser?keyword=${title.trim().replace(/\s+/g, '+')}`;
+      if (window.electronAPI?.openExternal) {
+        window.electronAPI.openExternal(searchUrl);
+      } else {
+        window.open(searchUrl, '_blank');
+      }
     }
   };
 
@@ -1321,6 +1361,8 @@ const Popular: React.FC = () => {
           isOpen={isModalOpen}
           onClose={handleCloseModal}
           onPlay={handlePlay}
+          onPlayEpisode={handlePlay}
+          forceFetchEpisodes={true}
         />
       </div>
     </div>

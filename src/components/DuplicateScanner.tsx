@@ -11,8 +11,13 @@ interface DuplicateGroup {
     episode?: number | null;
     isSeries?: boolean;
     modified?: number;
+    hash?: string | null;
+    verified?: boolean;
   }>;
   keepFile: string;
+  confidence?: 'high' | 'medium' | 'low';
+  reason?: string;
+  verifying?: boolean;
 }
 
 interface DuplicateScannerProps {
@@ -69,7 +74,15 @@ const DuplicateScanner: React.FC<DuplicateScannerProps> = ({ onClose }) => {
     // Remove year in parentheses (e.g., (2023), [2023])
     cleaned = cleaned.replace(/[([]\d{4}[)\]]/g, '');
     
-    // Remove brackets and their contents
+    // Preserve bracketed season/episode like [S01-E16] by moving them to the main string
+    const bracketSE = cleaned.match(/\[?s?\d{1,2}[-_.\s]*e\d{1,2}\]?/i);
+    if (bracketSE) {
+      // keep it (we'll standardize later)
+      // remove the bracketed portion from cleaned so it isn't stripped by the generic bracket removal
+      cleaned = cleaned.replace(bracketSE[0], ` ${bracketSE[0]} `);
+    }
+
+    // Remove brackets and their contents (we already preserved SxxExx where applicable)
     cleaned = cleaned.replace(/\[.*?\]/g, '');
     
     // Remove parentheses and their contents (but keep season/episode info)
@@ -106,46 +119,71 @@ const DuplicateScanner: React.FC<DuplicateScannerProps> = ({ onClose }) => {
     // Remove extra spaces and trim
     cleaned = cleaned.replace(/\s+/g, ' ').trim();
     
-    // For series, keep S01E01 pattern
-    const seasonEpisodeMatch = cleaned.match(/(s\d{1,2}e\d{1,2})/i);
+    // For series, find and standardize S01E01 pattern (accept hyphens, dots, underscores, spaces)
+    const seasonEpisodeMatch = cleaned.match(/(s\d{1,2}[-_.\s]*e\d{1,2})/i);
     if (seasonEpisodeMatch) {
-      cleaned = cleaned.replace(/(.*?)(s\d{1,2}e\d{1,2})(.*)/i, '$1 $2').trim();
+      const raw = seasonEpisodeMatch[1];
+      const parts = raw.replace(/[-_.\s]/g, '').match(/s(\d{1,2})e(\d{1,2})/i);
+      if (parts) {
+        const s = parts[1].padStart(2, '0');
+        const e = parts[2].padStart(2, '0');
+        cleaned = cleaned.replace(/(.*?)(s\d{1,2}[-_.\s]*e\d{1,2})(.*)/i, `$1 s${s}e${e}`).trim();
+      }
     }
     
     return cleaned;
   };
 
+  // Levenshtein distance for fuzzy filename matching
+  const levenshtein = (a: string, b: string) => {
+    const alen = a.length, blen = b.length;
+    if (alen === 0) return blen;
+    if (blen === 0) return alen;
+    const dp: number[][] = Array.from({ length: alen + 1 }, () => Array(blen + 1).fill(0));
+    for (let i = 0; i <= alen; i++) dp[i][0] = i;
+    for (let j = 0; j <= blen; j++) dp[0][j] = j;
+    for (let i = 1; i <= alen; i++) {
+      for (let j = 1; j <= blen; j++) {
+        const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+        dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost);
+      }
+    }
+    return dp[alen][blen];
+  };
+
+  const stringSimilarity = (a: string, b: string) => {
+    if (!a || !b) return 0;
+    const dist = levenshtein(a, b);
+    return 1 - (dist / Math.max(a.length, b.length));
+  };
+
   const parseEpisodeInfo = (fileName: string): { season: number | null, episode: number | null, isSeries: boolean } => {
     const baseName = fileName.replace(/\.[^/.]+$/, '').toLowerCase();
-    
-    // Look for season and episode patterns
-    // Common patterns: S01E01, s01e01, Season 1 Episode 1, 1x01, [001], etc.
-    const patterns = [
-      /(?:s|season\s*)(\d{1,2})(?:e|episode\s*|x)(\d{1,2})/i,  // S01E01, Season 1 Episode 1, 1x01
-      /(\d{1,2})x(\d{1,2})/,  // 1x01
-      /\[(\d{1,3})\]/,  // [001], [020], etc. (for numbered anime series)
-      /episode\s*(\d{1,3})/i,  // Episode 1 (for single episode files)
+
+    // Robust patterns that handle S01E01, S01-E01, [S01-E01], 1x01, Season 1 Episode 1, [001], etc.
+    const patterns: RegExp[] = [
+      /s\s*0*(\d{1,2})\s*[-_.\s]*?e\s*0*(\d{1,2})/i,               // S01E01, S01-E01, S01.E01, [S01-E01]
+      /season\s*0*(\d{1,2}).{0,6}?episode\s*0*(\d{1,2})/i,          // Season 1 Episode 1
+      /(\d{1,2})x(\d{1,2})/,                                         // 1x01
+      /\[0*(\d{1,3})\]/,                                            // [001] -> treat as episode number (season 1)
+      /episode\s*0*(\d{1,3})/i                                       // Episode 1 (assume season 1)
     ];
-    
+
     for (const pattern of patterns) {
       const match = baseName.match(pattern);
       if (match) {
-        if (pattern === patterns[2]) {
-          // Bracket pattern [###] - assume season 1 for numbered series
+        // Bracket-only or single-number episode patterns -> assume season 1
+        if (pattern === patterns[3] || pattern === patterns[4]) {
           return { season: 1, episode: parseInt(match[1]), isSeries: true };
-        } else if (pattern === patterns[3]) {
-          // Single episode pattern - assume season 1
-          return { season: 1, episode: parseInt(match[1]), isSeries: true };
-        } else {
-          return { 
-            season: parseInt(match[1]), 
-            episode: parseInt(match[2]), 
-            isSeries: true 
-          };
+        }
+
+        // Patterns with two capture groups: season & episode
+        if (match.length >= 3 && match[1] !== undefined && match[2] !== undefined) {
+          return { season: parseInt(match[1]), episode: parseInt(match[2]), isSeries: true };
         }
       }
     }
-    
+
     return { season: null, episode: null, isSeries: false };
   };
 
@@ -236,7 +274,7 @@ const DuplicateScanner: React.FC<DuplicateScannerProps> = ({ onClose }) => {
         });
       }
 
-      // Group by normalized name, episode info (for series), AND size range
+      // Group by normalized name & size first, then perform a fuzzy-merge pass to catch near-matches
       const groupedByNameAndSize = new Map<string, typeof allFiles>();
       
       for (const file of allFiles) {
@@ -265,10 +303,56 @@ const DuplicateScanner: React.FC<DuplicateScannerProps> = ({ onClose }) => {
         }
       }
 
-      console.log(`📊 Total unique file groups: ${groupedByNameAndSize.size}`);
+      // Fuzzy merge similar groups (catch slight filename variations, container differences, etc.)
+      const groupsArr = Array.from(groupedByNameAndSize.entries()).map(([key, files]) => ({ key, files, merged: false }));
 
-      // Identify duplicates within each group
-      for (const [/* key */, files] of groupedByNameAndSize) {
+      for (let i = 0; i < groupsArr.length; i++) {
+        if (groupsArr[i].merged) continue;
+        for (let j = i + 1; j < groupsArr.length; j++) {
+          if (groupsArr[j].merged) continue;
+          const a = groupsArr[i];
+          const b = groupsArr[j];
+
+          const aNorm = a.files[0].normalized;
+          const bNorm = b.files[0].normalized;
+          const nameSim = stringSimilarity(aNorm, bNorm);
+
+          const aIsSeries = !!(a.files[0].isSeries && a.files[0].season !== null && a.files[0].episode !== null);
+          const bIsSeries = !!(b.files[0].isSeries && b.files[0].season !== null && b.files[0].episode !== null);
+
+          let shouldMerge = false;
+
+          if (aIsSeries || bIsSeries) {
+            // Merge only if both look like the same episode (season/episode match)
+            const aSE = `${a.files[0].season || ''}x${a.files[0].episode || ''}`;
+            const bSE = `${b.files[0].season || ''}x${b.files[0].episode || ''}`;
+            if (aSE === bSE && nameSim >= 0.6) shouldMerge = true;
+          } else {
+            // Movie heuristics: high name similarity OR inclusion + small size diff
+            const sizeA = a.files[0].size || 0;
+            const sizeB = b.files[0].size || 0;
+            const sizePct = Math.abs(sizeA - sizeB) / Math.max(1, Math.max(sizeA, sizeB));
+
+            if (nameSim >= 0.86 && sizePct <= 0.06) shouldMerge = true; // very likely same
+            if (aNorm.includes(bNorm) || bNorm.includes(aNorm)) {
+              if (sizePct <= 0.15) shouldMerge = true; // allow larger container differences
+            }
+          }
+
+          if (shouldMerge) {
+            a.files.push(...b.files);
+            groupsArr[j].merged = true;
+          }
+        }
+      }
+
+      // Rebuild grouped map from merged groups
+      const mergedGroups: Array<typeof allFiles> = groupsArr.filter(g => !g.merged).map(g => g.files);
+
+      console.log(`📊 Total unique file groups after fuzzy merge: ${mergedGroups.length}`);
+
+      // Identify duplicates within each merged group
+      for (const files of mergedGroups) {
         if (abortControllerRef.current.signal.aborted) break;
         
         if (files.length > 1) {
@@ -276,13 +360,12 @@ const DuplicateScanner: React.FC<DuplicateScannerProps> = ({ onClose }) => {
           const originalFiles = files.filter(file => !isBackupFile(file.name));
           const backupFiles = files.filter(file => isBackupFile(file.name));
           
-          // Only consider original files as potential duplicates
-          // Backup files are intentionally kept separate and not flagged as duplicates
+          // Only consider original files as potential duplicates (include backup if needed)
           const filesToCheck = originalFiles.length > 1 ? originalFiles : 
                               (originalFiles.length === 1 && backupFiles.length > 0 ? [originalFiles[0], ...backupFiles] : files);
           
           if (filesToCheck.length > 1) {
-            console.log(`✅ Found duplicate group: ${files[0].normalized} (${filesToCheck.length} files)`);
+            console.log(`✅ Found duplicate group candidate: ${files[0].normalized} (${filesToCheck.length} files)`);
             
             // Get file stats for more accurate comparison
             const filesWithStats = await Promise.all(
@@ -292,10 +375,12 @@ const DuplicateScanner: React.FC<DuplicateScannerProps> = ({ onClose }) => {
                   return {
                     ...file,
                     modified: fileStats?.mtimeMs || 0,
-                    created: fileStats?.birthtimeMs || 0
+                    created: fileStats?.birthtimeMs || 0,
+                    hash: null,
+                    verified: false
                   };
                 } catch {
-                  return { ...file, modified: 0, created: 0 };
+                  return { ...file, modified: 0, created: 0, hash: null, verified: false };
                 }
               })
             );
@@ -303,15 +388,26 @@ const DuplicateScanner: React.FC<DuplicateScannerProps> = ({ onClose }) => {
             // Sort by file size (largest first), then by modification date (newest first)
             filesWithStats.sort((a, b) => {
               if (b.size !== a.size) return b.size - a.size;
-              return b.modified - a.modified;
+              return (b.modified || 0) - (a.modified || 0);
             });
 
             // Keep the best quality file (largest size, newest)
             const keepFile = filesWithStats[0].path;
-            
+
+            // Compute name similarity score to gauge confidence
+            const nameSims = filesWithStats.map(f => stringSimilarity(f.normalized, filesWithStats[0].normalized));
+            const avgNameSim = nameSims.reduce((s, n) => s + n, 0) / nameSims.length;
+            const sizeStdDev = Math.sqrt(filesWithStats.reduce((acc, f) => acc + Math.pow(f.size - filesWithStats.reduce((s, x) => s + x.size, 0) / filesWithStats.length, 2), 0) / filesWithStats.length);
+
+            let confidence: DuplicateGroup['confidence'] = 'low';
+            if (avgNameSim >= 0.95 && sizeStdDev / (filesWithStats[0].size || 1) < 0.03) confidence = 'high';
+            else if (avgNameSim >= 0.85) confidence = 'medium';
+
             duplicateGroups.push({
               files: filesWithStats,
-              keepFile
+              keepFile,
+              confidence,
+              reason: confidence === 'high' ? 'Names and sizes match closely' : (confidence === 'medium' ? 'Fuzzy name match; verify recommended' : 'Low confidence — verify before removing')
             });
           }
         }
@@ -659,12 +755,59 @@ const DuplicateScanner: React.FC<DuplicateScannerProps> = ({ onClose }) => {
                         <div key={groupIndex} className="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
                           <div className="p-4 border-b border-gray-700 bg-gray-800/50">
                             <div className="flex items-center justify-between">
-                              <h4 className="text-white font-semibold">
-                                Group {groupIndex + 1}: {normalizeFileName(group.files[0].name) || 'Unnamed'}
-                              </h4>
-                              <div className="text-sm text-gray-400">
-                                {group.files.length} files • {formatFileSize(group.files[0].size)} each
+                              <div className="flex items-center gap-4">
+                              <h4 className="text-white font-semibold">Group {groupIndex + 1}: {normalizeFileName(group.files[0].name) || 'Unnamed'}</h4>
+
+                              {/* Confidence badge */}
+                              {group.confidence === 'high' && <div className="text-xs bg-emerald-600 text-white px-2 py-1 rounded-full">Confirmed</div>}
+                              {group.confidence === 'medium' && <div className="text-xs bg-yellow-600 text-white px-2 py-1 rounded-full">Potential</div>}
+                              {(!group.confidence || group.confidence === 'low') && <div className="text-xs bg-gray-600 text-white px-2 py-1 rounded-full">Unverified</div>}
+
+                              {/* Verify (hash) button */}
+                              <div className="ml-auto flex items-center gap-2">
+                                <button
+                                  onClick={async () => {
+                                    if (!window.electronAPI?.computeFileHash) {
+                                      alert('Hash verification not available in this build.');
+                                      return;
+                                    }
+                                    // mark verifying
+                                    setDuplicates(prev => prev.map((g, idx) => idx === groupIndex ? { ...g, verifying: true } : g));
+                                    try {
+                                      const hashes = await Promise.all(group.files.map(async (file) => {
+                                        try {
+                                          const res = await window.electronAPI!.computeFileHash(file.path, { mode: 'quick' });
+                                          return res.hash || null;
+                                        } catch (err) {
+                                          return null;
+                                        }
+                                      }));
+
+                                      setDuplicates(prev => prev.map((g, idx) => {
+                                        if (idx !== groupIndex) return g;
+                                        const updatedFiles = g.files.map((f, i) => ({ ...f, hash: hashes[i] }));
+                                        const uniqueHashes = Array.from(new Set(hashes.filter(Boolean)));
+                                        let newConfidence: DuplicateGroup['confidence'] = g.confidence || 'low';
+                                        if (uniqueHashes.length === 1 && uniqueHashes[0]) newConfidence = 'high';
+                                        else if (uniqueHashes.length <= 2) newConfidence = 'medium';
+                                        else newConfidence = 'low';
+                                        return { ...g, files: updatedFiles, confidence: newConfidence, verifying: false };
+                                      }));
+                                    } finally {
+                                      setDuplicates(prev => prev.map((g, idx) => idx === groupIndex ? { ...g, verifying: false } : g));
+                                    }
+                                  }}
+                                  className="px-3 py-1 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg"
+                                  disabled={group.verifying}
+                                >
+                                  {group.verifying ? 'Verifying…' : 'Verify (hash)'}
+                                </button>
                               </div>
+                            </div>
+
+                            <div className="text-sm text-gray-400">
+                              {group.files.length} files • {formatFileSize(group.files[0].size)} each
+                            </div>
                             </div>
                           </div>
 

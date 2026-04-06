@@ -4,9 +4,10 @@ import { TMDBResult } from '../types/media';
 import { LocalMediaFile, parseMediaFilename, localFileToTMDBResult } from '../utils/localMedia';
 import { searchMedia, getImageUrl, getBackdropUrl, getIMDbRating, getDetails } from '../api/tmdb';
 import DetailsModal from '../components/media/DetailsModal';
-import { addRecentlyWatched } from '../utils/recentlyWatched';
+import { addRecentlyWatched, getRecentlyWatched, normalizePath } from '../utils/recentlyWatched';
 import { libraryCache } from '../utils/libraryCache';
 import { GENRE_NAME_MAP } from '../utils/genrePreferences';
+import { playMediaWithTracking } from '../utils/mediaPlayback';
 import '../types/electron';
 
 // All available genres for filtering from master map
@@ -40,6 +41,13 @@ const LocalMovies: React.FC = () => {
     const init = async () => {
       await libraryCache.load();
       await loadLocalMovies();
+      // After loading, ensure all cached movies that have a local path are re-cached to trigger image caching
+      const allMovies = Object.values(libraryCache["data"]?.movies || {}).filter(m => m.local_path);
+      const allowFetch = typeof window !== 'undefined' ? (window.navigator?.onLine ?? true) : true;
+      await Promise.all(allMovies.map(m => libraryCache.setMovie(m.local_path!, m, { allowImageFetch: allowFetch })));
+      // Reload movies from cache and update state so UI gets updated image paths
+      const updatedMovies = Object.values(libraryCache["data"]?.movies || {});
+      setMovies(updatedMovies);
     };
     init();
   }, []);
@@ -51,9 +59,15 @@ const LocalMovies: React.FC = () => {
         return;
       }
 
+      const isOnline = typeof window !== 'undefined' ? (window.navigator?.onLine ?? true) : true;
+
       if (force) {
-        console.log('🔄 Forced refresh: clearing movie cache');
-        libraryCache.clearMovies();
+        if (!isOnline) {
+          console.log('🔄 Forced refresh requested but offline — skipping cache clearing and image re-fetch. Will only rescan folders.');
+        } else {
+          console.log('🔄 Forced refresh: clearing movie cache');
+          libraryCache.clearMovies();
+        }
       }
 
       setLoading(true);
@@ -106,16 +120,20 @@ const LocalMovies: React.FC = () => {
             const cached = libraryCache.getMovie(file.path);
             if (cached) {
               console.log('📦 Found in cache:', parsed.title);
-              // Migrate/Verify images and get the potentially updated result
-              const verified = await libraryCache.ensureImagesCached(file.path, 'movie');
-              const finalItem = verified || cached;
-
+              // Call setMovie and allow image fetch only when online. If the user requested a force refresh and we're online, request a forced image refresh.
+              await libraryCache.setMovie(file.path, cached, { allowImageFetch: isOnline, forceImageRefresh: force && isOnline });
               return {
-                ...finalItem,
+                ...cached,
                 local_path: file.path,
                 modified_date: file.modified,
                 file_size: file.size
               };
+            }
+
+            // If offline, skip TMDB lookups and return basic local data
+            if (!isOnline) {
+              console.log('📴 Offline - skipping TMDB lookup for:', parsed.title);
+              return localFileToTMDBResult(file, parsed);
             }
 
             // Search TMDB for the movie
@@ -165,8 +183,8 @@ const LocalMovies: React.FC = () => {
                 // Keep TMDB data for posters, overview, etc.
               };
 
-              // Save to cache
-              await libraryCache.setMovie(file.path, movieData);
+              // Save to cache (only fetch images when online). Force image refresh when user explicitly requested a refresh.
+              await libraryCache.setMovie(file.path, movieData, { allowImageFetch: isOnline, forceImageRefresh: force && isOnline });
 
               return movieData;
             } else {
@@ -216,6 +234,10 @@ const LocalMovies: React.FC = () => {
   const handlePlayMovie = async (movie: TMDBResult) => {
     if (movie.local_path) {
       try {
+        const normalizedPath = normalizePath(movie.local_path);
+        const existingResume = getRecentlyWatched().find(item => item.path === normalizedPath);
+        const resumeProgress = existingResume?.progress ?? movie.progress ?? 0;
+
         // Add to recently watched with poster path
         const posterPath = movie.local_poster_path || (movie.poster_path ? getImageUrl(movie.poster_path, 'w500') : undefined);
         const backdropPath = movie.local_backdrop_path || (movie.backdrop_path ? getBackdropUrl(movie.backdrop_path, 'w1280') : undefined);
@@ -232,9 +254,26 @@ const LocalMovies: React.FC = () => {
           type: 'movie',
           path: movie.local_path,
           poster_path: posterPath,
-          backdrop_path: backdropPath
+          backdrop_path: backdropPath,
+          progress: resumeProgress
         });
-        await window.electronAPI?.openFile(movie.local_path);
+
+        // Use enhanced media playback with VLC tracking
+        const result = await playMediaWithTracking(movie.local_path, {
+          startTime: resumeProgress,
+          fullscreen: true,
+          useVLCTracking: true
+        });
+
+        if (!result.success) {
+          console.error('Failed to play movie:', result.error);
+          // Fallback to basic openFile if available
+          if (window.electronAPI?.openFile) {
+            window.electronAPI.openFile(movie.local_path, resumeProgress);
+          }
+        } else {
+          console.log(`🎬 Movie started with ${result.method} player`);
+        }
       } catch (error) {
         console.error('Error opening movie file:', error);
       }

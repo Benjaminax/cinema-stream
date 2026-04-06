@@ -4,7 +4,8 @@ import HeroCarousel from '../components/media/HeroCarousel';
 import MediaRow from '../components/media/MediaRow';
 import DetailsModal from '../components/media/DetailsModal';
 import { TMDBResult, DiscoverParams, Episode } from '../types/media';
-import { getTrending, getLogos, getDiscover, getCredits, getByStreamingProvider } from '../api/tmdb';
+import { playMediaWithTracking } from '../utils/mediaPlayback';
+import { getTrending, getLogos, getDiscover, getCredits, getByStreamingProvider, getVideos, getDetails } from '../api/tmdb';
 import { getRecentlyWatched, addRecentlyWatched } from '../utils/recentlyWatched';
 import { getImageUrl } from '../api/tmdb';
 import { useNetworkStatus } from '../hooks/useNetworkStatus';
@@ -48,6 +49,7 @@ const Home: React.FC<{ isActive?: boolean }> = ({ isActive = true }) => {
   const [selectedItem, setSelectedItem] = useState<TMDBResult | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [autoPlayTrailer, setAutoPlayTrailer] = useState(false);
+  const [modalTrailerKey, setModalTrailerKey] = useState<string | null>(null); // override trailer key for DetailsModal
   const { isOnline, retry } = useNetworkStatus();
   
   // Streaming service sections for Movies
@@ -96,7 +98,8 @@ const Home: React.FC<{ isActive?: boolean }> = ({ isActive = true }) => {
   const [shownMovies, setShownMovies] = useState<Set<number>>(new Set());
   const [carouselItems, setCarouselItems] = useState<TMDBResult[]>([]);
   const [tvCarouselItems, setTvCarouselItems] = useState<TMDBResult[]>([]);
-  const [recentlyWatched, setRecentlyWatched] = useState<TMDBResult[]>([]);
+  const [_recentlyWatched, setRecentlyWatched] = useState<TMDBResult[]>([]);
+  const [_disableEpisodePlayInModal, setDisableEpisodePlayInModal] = useState(false);
 
   const fetchData = async (isRefresh = false) => {
     // Don't fetch if we already have data and it's not a refresh
@@ -517,7 +520,10 @@ const Home: React.FC<{ isActive?: boolean }> = ({ isActive = true }) => {
     };
   }, [isActive]);
 
-  const handlePlay = (item: TMDBResult | Episode) => {
+  const handlePlay = async (item: TMDBResult | Episode) => {
+    // Reset any previous modal override trailer key
+    setModalTrailerKey(null);
+
     // Check if it's an episode with a file path
     if ('file_path' in item && item.file_path) {
       // Play the episode file directly
@@ -537,33 +543,77 @@ const Home: React.FC<{ isActive?: boolean }> = ({ isActive = true }) => {
           still_path: (item as any).local_still_path || (item as any).still_path
         });
 
-        window.electronAPI.openFile(item.file_path, item.progress);
+        // Use enhanced media playback for episodes
+        const result = await playMediaWithTracking(item.file_path, {
+          startTime: (item as any).progress,
+          fullscreen: true,
+          useVLCTracking: true
+        });
+        
+        if (!result.success && window.electronAPI?.openFile) {
+          // Fallback to basic openFile
+          window.electronAPI.openFile(item.file_path, (item as any).progress);
+        }
       } else {
         console.log('Play episode file:', item.file_path);
       }
-    } else if ('local_path' in item && item.local_path) {
-      // For series/movies with local path, add to recently watched and open
-      const posterPath = item.local_poster_path || (item.poster_path ? getImageUrl(item.poster_path, 'w500') : undefined);
-      const backdropPath = item.local_backdrop_path || (item.backdrop_path ? getImageUrl(item.backdrop_path, 'original') : undefined);
 
-      addRecentlyWatched({
-        id: item.id,
-        title: item.title || item.name || 'Unknown',
-        type: (item.first_air_date || item.media_type === 'tv') ? 'tv' : 'movie',
-        path: item.local_path,
-        poster_path: posterPath,
-        backdrop_path: backdropPath
-      });
+      return;
+    }
 
-      if (window.electronAPI?.openFile) {
-        window.electronAPI.openFile(item.local_path, item.progress);
+    // Episode object with no local file — search on yflix using series title
+    if ('season' in item && 'episode' in item) {
+      const seriesTitle = (item as any).seriesTitle || selectedItem?.name || selectedItem?.title || (item as any).title || '';
+      const searchUrl = `https://yflix.to/browser?keyword=${seriesTitle.trim().replace(/\s+/g, '+')}`;
+      if (window.electronAPI?.openExternal) {
+        window.electronAPI.openExternal(searchUrl);
+      } else {
+        window.open(searchUrl, '_blank');
       }
+      return;
+    }
+
+    // If it's a TMDB TV show (no local file) — try to prefer latest-season trailer when the show is trending
+    const isTVShow = (item as TMDBResult).media_type === 'tv' || !!(item as TMDBResult).first_air_date;
+
+    if (isTVShow && trendingTV.some(t => t.id === (item as TMDBResult).id)) {
+      try {
+        const details = await getDetails('tv', (item as TMDBResult).id);
+        const latestSeason = details?.number_of_seasons || undefined;
+        if (latestSeason) {
+          const videos = await getVideos('tv', (item as TMDBResult).id);
+          // Look for a trailer mentioning the latest season (e.g., "Season 3 Trailer", "S3 Trailer", "Season 3")
+          const seasonRegex = new RegExp(`season\\s*${latestSeason}|s\\s*${latestSeason}\\b|season[-_\\s]*${latestSeason}`, 'i');
+          const seasonTrailer = videos.find(v => v.type === 'Trailer' && seasonRegex.test(v.name));
+          if (seasonTrailer) {
+            setModalTrailerKey(seasonTrailer.key);
+          }
+        }
+      } catch (err) {
+        console.warn('Failed to fetch season trailer override:', err);
+      }
+    }
+
+    // If the item has a local file, play it directly
+    const tmdbItem = item as TMDBResult;
+    if (tmdbItem.local_path) {
+      const result = await playMediaWithTracking(tmdbItem.local_path, {
+        fullscreen: true,
+        useVLCTracking: true
+      });
+      if (!result.success && window.electronAPI?.openFile) {
+        window.electronAPI.openFile(tmdbItem.local_path);
+      }
+      return;
+    }
+
+    // For TMDB items without local files, search on yflix
+    const title = tmdbItem.title || tmdbItem.name || '';
+    const searchUrl = `https://yflix.to/browser?keyword=${title.trim().replace(/\s+/g, '+')}`;
+    if (window.electronAPI?.openExternal) {
+      window.electronAPI.openExternal(searchUrl);
     } else {
-      // For TMDB items without local files, open modal with trailer
-      setSelectedItem(item as TMDBResult);
-      setAutoPlayTrailer(true);
-      setIsModalOpen(true);
-      console.log('Play movie/show:', (item as TMDBResult).title || (item as TMDBResult).name);
+      window.open(searchUrl, '_blank');
     }
   };
 
@@ -577,6 +627,8 @@ const Home: React.FC<{ isActive?: boolean }> = ({ isActive = true }) => {
     setIsModalOpen(false);
     setSelectedItem(null);
     setAutoPlayTrailer(false);
+    setDisableEpisodePlayInModal(false);
+    setModalTrailerKey(null);
   };
 
   const rotateCarousel = () => {
@@ -682,16 +734,6 @@ const Home: React.FC<{ isActive?: boolean }> = ({ isActive = true }) => {
           </div>
 
           <div className="px-8 md:px-16 py-8 space-y-8">
-            {recentlyWatched.length > 0 && (
-              <MediaRow
-                title="Continue Watching"
-                items={recentlyWatched}
-                onCardClick={handleMoreInfo}
-                onPlay={handlePlay}
-                aspect="poster"
-              />
-            )}
-
             <MediaRow
               title="Trending Movies"
               items={trendingMovies}
@@ -924,63 +966,60 @@ const Home: React.FC<{ isActive?: boolean }> = ({ isActive = true }) => {
           </div>
 
           <div className="px-8 md:px-16 py-8 space-y-8">
-            {recentlyWatched.length > 0 && (
-              <MediaRow
-                title="Continue Watching"
-                items={recentlyWatched}
-                onCardClick={handleMoreInfo}
-                onPlay={handlePlay}
-                aspect="poster"
-              />
-            )}
-
             <MediaRow
               title="Trending TV Shows"
               items={trendingTV}
-              onCardClick={handleMoreInfo}
+              onCardClick={(item) => { setDisableEpisodePlayInModal(true); handleMoreInfo(item); }}
               onPlay={handlePlay}
+              disableEpisodePlay={true}
             />
 
             <MediaRow
               title="Popular TV Shows"
               items={trendingTV.slice().reverse()} // Just reverse for variety
-              onCardClick={handleMoreInfo}
+              onCardClick={(item) => { setDisableEpisodePlayInModal(true); handleMoreInfo(item); }}
               onPlay={handlePlay}
+              disableEpisodePlay={true}
             />
 
             <MediaRow
               title="Action-Packed Adventures"
               items={actionTV}
-              onCardClick={handleMoreInfo}
+              onCardClick={(item) => { setDisableEpisodePlayInModal(true); handleMoreInfo(item); }}
               onPlay={handlePlay}
+              disableEpisodePlay={true}
             />
 
             <MediaRow
               title="Animated Series"
               items={animationTV}
-              onCardClick={handleMoreInfo}
+              onCardClick={(item) => { setDisableEpisodePlayInModal(true); handleMoreInfo(item); }}
               onPlay={handlePlay}
+              disableEpisodePlay={true}
             />
 
             <MediaRow
               title="Anime Adventures"
               items={animeTV}
-              onCardClick={handleMoreInfo}
+              onCardClick={(item) => { setDisableEpisodePlayInModal(true); handleMoreInfo(item); }}
               onPlay={handlePlay}
+              disableEpisodePlay={true}
             />
 
             <MediaRow
               title="Hilarious Sitcoms"
               items={comedyTV}
-              onCardClick={handleMoreInfo}
+              onCardClick={(item) => { setDisableEpisodePlayInModal(true); handleMoreInfo(item); }}
               onPlay={handlePlay}
+              disableEpisodePlay={true}
             />
 
             <MediaRow
               title="Crime Dramas"
               items={crimeTV}
-              onCardClick={handleMoreInfo}
+              onCardClick={(item) => { setDisableEpisodePlayInModal(true); handleMoreInfo(item); }}
               onPlay={handlePlay}
+              disableEpisodePlay={true}
             />
 
             <MediaRow
@@ -1131,6 +1170,7 @@ const Home: React.FC<{ isActive?: boolean }> = ({ isActive = true }) => {
         isOpen={isModalOpen}
         onClose={handleCloseModal}
         autoPlayTrailer={autoPlayTrailer}
+        overrideTrailerKey={modalTrailerKey ?? undefined}
         onPlay={handlePlay}
         onPlayEpisode={handlePlay}
         forceFetchEpisodes={true}

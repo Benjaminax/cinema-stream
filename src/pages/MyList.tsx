@@ -1,11 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { BookmarkPlus, Sparkles } from 'lucide-react';
 import { getMyList } from '../utils/myList';
-import { TMDBResult } from '../types/media';
+import { TMDBResult, Episode } from '../types/media';
 import MediaCard from '../components/media/MediaCard';
 import DetailsModal from '../components/media/DetailsModal';
 import { useNetworkStatus } from '../hooks/useNetworkStatus';
 import NoInternetConnection from '../components/offline/NoInternetConnection';
+import { playMediaWithTracking } from '../utils/mediaPlayback';
 
 const MyList: React.FC = () => {
     const [list, setList] = useState<TMDBResult[]>([]);
@@ -20,13 +21,39 @@ const MyList: React.FC = () => {
         return () => window.removeEventListener('my-list-updated', load);
     }, []);
 
-    const handlePlay = (item: TMDBResult) => {
-        if (window.electronAPI?.openFile && item.local_path) {
-            window.electronAPI.openFile(item.local_path);
+    const handlePlay = async (item: TMDBResult | Episode) => {
+        if ('file_path' in item && item.file_path) {
+            const result = await playMediaWithTracking(item.file_path, {
+                startTime: (item as any).progress,
+                fullscreen: true,
+                useVLCTracking: true
+            });
+
+            if (!result.success && window.electronAPI?.openFile) {
+                window.electronAPI.openFile(item.file_path, (item as any).progress);
+            }
+        } else if ('local_path' in item && item.local_path) {
+            // Use enhanced media playback with VLC tracking
+            const result = await playMediaWithTracking(item.local_path, {
+                fullscreen: true,
+                useVLCTracking: true
+            });
+            
+            if (!result.success && window.electronAPI?.openFile) {
+                // Fallback to basic openFile
+                window.electronAPI.openFile(item.local_path);
+            }
         } else {
-            console.log('Play item:', item.title || item.name);
-            setSelectedItem(item);
-            setIsModalOpen(true);
+            const isEpisode = 'season' in item && 'episode' in item;
+            const title = isEpisode
+                ? ((item as any).seriesTitle || selectedItem?.name || selectedItem?.title || item.title || '')
+                : ((item as TMDBResult).title || (item as TMDBResult).name || '');
+            const searchUrl = `https://yflix.to/browser?keyword=${title.trim().replace(/\s+/g, '+')}`;
+            if (window.electronAPI?.openExternal) {
+                window.electronAPI.openExternal(searchUrl);
+            } else {
+                window.open(searchUrl, '_blank');
+            }
         }
     };
 
@@ -111,6 +138,8 @@ const MyList: React.FC = () => {
                         setIsModalOpen(false);
                     }}
                     onPlay={handlePlay}
+                    onPlayEpisode={handlePlay}
+                    forceFetchEpisodes={true}
                 />
             </div>
         </div>

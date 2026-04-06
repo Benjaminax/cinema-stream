@@ -72,16 +72,45 @@ class LibraryCache {
         return this.data.episodes[key] || null;
     }
 
-    async setMovie(path: string, result: TMDBResult) {
+    // options.allowImageFetch: when false we will not attempt to fetch remote images (useful when offline)
+    async setMovie(path: string, result: TMDBResult, options?: { allowImageFetch?: boolean; forceImageRefresh?: boolean }) {
         const normalized = normalizePath(path);
-        const enrichedResult = await this.cacheImages(result);
+        let enrichedResult = { ...result };
+
+        const canFetchImages = options?.allowImageFetch !== false && typeof window !== 'undefined' && (window.navigator?.onLine ?? true);
+
+        if (canFetchImages) {
+            enrichedResult = await this.cacheImages(result);
+        } else {
+            // Preserve any existing local image paths if available
+            const existing = this.data.movies[normalized];
+            if (existing) {
+                if (existing.local_poster_path) enrichedResult.local_poster_path = existing.local_poster_path;
+                if (existing.local_backdrop_path) enrichedResult.local_backdrop_path = existing.local_backdrop_path;
+            }
+        }
+
         this.data.movies[normalized] = enrichedResult;
         await this.save();
     }
 
-    async setSeries(path: string, result: TMDBResult) {
+    // options.allowImageFetch: when false we will not attempt to fetch remote images (useful when offline)
+    async setSeries(path: string, result: TMDBResult, options?: { allowImageFetch?: boolean; forceImageRefresh?: boolean }) {
         const normalized = normalizePath(path);
-        const enrichedResult = await this.cacheImages(result);
+        let enrichedResult = { ...result };
+
+        const canFetchImages = options?.allowImageFetch !== false && typeof window !== 'undefined' && (window.navigator?.onLine ?? true);
+
+        if (canFetchImages) {
+            enrichedResult = await this.cacheImages(result);
+        } else {
+            const existing = this.data.series[normalized];
+            if (existing) {
+                if (existing.local_poster_path) enrichedResult.local_poster_path = existing.local_poster_path;
+                if (existing.local_backdrop_path) enrichedResult.local_backdrop_path = existing.local_backdrop_path;
+            }
+        }
+
         this.data.series[normalized] = enrichedResult;
         await this.save();
     }
@@ -129,31 +158,40 @@ class LibraryCache {
         return item;
     }
 
-    private async cacheImages(result: TMDBResult): Promise<TMDBResult> {
+    private async cacheImages(result: TMDBResult, options?: { forceImageRefresh?: boolean }): Promise<TMDBResult> {
         const updated = { ...result };
+        const force = !!options?.forceImageRefresh;
 
         if (window.electronAPI?.downloadImage) {
-            // Cache poster if missing local path or using old file:// protocol
-            if (result.poster_path && (!result.local_poster_path || result.local_poster_path.startsWith('file://'))) {
-                const posterUrl = `https://image.tmdb.org/t/p/w500${result.poster_path}`;
-                const fileName = `poster_${result.id}_w500.jpg`;
-                console.log(`🖼️ Downloading poster for ${result.title || result.name}: ${posterUrl}`);
-                const localPath = await window.electronAPI.downloadImage(posterUrl, fileName);
-                if (localPath) {
-                    updated.local_poster_path = `mediaflix://load?path=${encodeURIComponent(localPath)}`;
-                    console.log(`✅ Cached poster: ${updated.local_poster_path}`);
+            // Cache poster: fetch when missing/old file:// or when force refresh is requested
+            if (result.poster_path && (force || !result.local_poster_path || result.local_poster_path.startsWith('file://'))) {
+                try {
+                    const posterUrl = `https://image.tmdb.org/t/p/w500${result.poster_path}`;
+                    const fileName = `poster_${result.id}_w500.jpg`;
+                    console.log(`🖼️ Downloading poster for ${result.title || result.name}: ${posterUrl} (force=${force})`);
+                    const localPath = await window.electronAPI.downloadImage(posterUrl, fileName, { overwrite: force });
+                    if (localPath) {
+                        updated.local_poster_path = `mediaflix://load?path=${encodeURIComponent(localPath)}`;
+                        console.log(`✅ Cached poster: ${updated.local_poster_path}`);
+                    }
+                } catch (err) {
+                    console.warn('⚠️ Failed to download poster:', err);
                 }
             }
 
-            // Cache backdrop if missing local path or using old file:// protocol
-            if (result.backdrop_path && (!result.local_backdrop_path || result.local_backdrop_path.startsWith('file://'))) {
-                const backdropUrl = `https://image.tmdb.org/t/p/w1280${result.backdrop_path}`;
-                const fileName = `backdrop_${result.id}_w1280.jpg`;
-                console.log(`🖼️ Downloading backdrop for ${result.title || result.name}: ${backdropUrl}`);
-                const localPath = await window.electronAPI.downloadImage(backdropUrl, fileName);
-                if (localPath) {
-                    updated.local_backdrop_path = `mediaflix://load?path=${encodeURIComponent(localPath)}`;
-                    console.log(`✅ Cached backdrop: ${updated.local_backdrop_path}`);
+            // Cache backdrop: fetch when missing or when force refresh is requested
+            if (result.backdrop_path && (force || !result.local_backdrop_path || result.local_backdrop_path.startsWith('file://'))) {
+                try {
+                    const backdropUrl = `https://image.tmdb.org/t/p/w1280${result.backdrop_path}`;
+                    const fileName = `backdrop_${result.id}_w1280.jpg`;
+                    console.log(`🖼️ Downloading backdrop for ${result.title || result.name}: ${backdropUrl} (force=${force})`);
+                    const localPath = await window.electronAPI.downloadImage(backdropUrl, fileName, { overwrite: force });
+                    if (localPath) {
+                        updated.local_backdrop_path = `mediaflix://load?path=${encodeURIComponent(localPath)}`;
+                        console.log(`✅ Cached backdrop: ${updated.local_backdrop_path}`);
+                    }
+                } catch (err) {
+                    console.warn('⚠️ Failed to download backdrop:', err);
                 }
             }
         }

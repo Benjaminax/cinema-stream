@@ -3,6 +3,8 @@ import { Play, Info } from 'lucide-react';
 import { TMDBResult } from '../../types/media';
 import { getImageUrl } from '../../api/tmdb';
 
+const PLACEHOLDER_BACKDROP = new URL('/placeholder-backdrop.png', import.meta.url).href;
+
 interface HeroCarouselProps {
   items: TMDBResult[];
   onPlay: (item: TMDBResult) => void;
@@ -36,7 +38,7 @@ const HeroCarousel: React.FC<HeroCarouselProps> = ({
           className="h-full w-full object-cover"
           onError={(e) => {
             const target = e.target as HTMLImageElement;
-            target.src = '/placeholder-backdrop.png';
+            target.src = PLACEHOLDER_BACKDROP;
           }}
         />
         {/* Vertical fade to blend foreground content */}

@@ -8,9 +8,15 @@ import { parseMediaFilename, cleanMediaTitle } from '../src/utils/mediaParser.js
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
-// VLC Media Player Manager
+// VLC Media Player Manager with Advanced Tracking
 class MediaPlayerManager {
   private vlcPath: string | null = null;
+  private vlcProcess: any = null;
+  private httpPassword: string = 'vlcpass123';
+  private httpPort: number = 8080;
+  private trackingInterval: NodeJS.Timeout | null = null;
+  private currentMediaPath: string | null = null;
+  private isTracking: boolean = false;
 
   constructor() {
     this.vlcPath = this.findVLCPath();
@@ -38,17 +44,36 @@ class MediaPlayerManager {
     return null;
   }
 
+  private async findAvailablePort(): Promise<number> {
+    const net = require('net');
+    return new Promise((resolve, reject) => {
+      const server = net.createServer();
+      server.listen(0, () => {
+        const port = server.address().port;
+        server.close(() => {
+          resolve(port);
+        });
+      });
+      server.on('error', reject);
+    });
+  }
+
   async playMedia(filePath: string, options: any = {}): Promise<{ success: boolean; error?: string }> {
     if (!this.vlcPath) {
       return { success: false, error: 'VLC Media Player not found. Please install VLC or check bundled installation.' };
     }
 
     try {
+      // Find available port for HTTP interface
+      this.httpPort = await this.findAvailablePort();
+      
       const vlcArgs = [
         filePath,
-        '--intf', 'qt',
-        '--qt-start-minimized',
-        '--play-and-exit'
+        '--intf', 'http',
+        '--http-password', this.httpPassword,
+        '--http-port', this.httpPort.toString(),
+        '--extraintf', 'qt',
+        '--qt-start-minimized'
       ];
 
       // Add resume from timestamp if provided
@@ -61,16 +86,196 @@ class MediaPlayerManager {
         vlcArgs.push('--fullscreen');
       }
 
-      const vlcProcess = spawn(this.vlcPath, vlcArgs, {
-        detached: true,
-        stdio: 'ignore'
+      // Kill existing VLC process if running
+      if (this.vlcProcess) {
+        this.stopTracking();
+        try {
+          this.vlcProcess.kill();
+        } catch (e) {
+          console.log('Previous VLC process already terminated');
+        }
+      }
+
+      console.log(`🎮 Starting VLC with HTTP interface on port ${this.httpPort}`);
+      
+      this.vlcProcess = spawn(this.vlcPath, vlcArgs, {
+        detached: false,
+        stdio: 'pipe'
       });
 
-      vlcProcess.unref();
+      this.currentMediaPath = filePath;
+      
+      // Start tracking after a delay to allow VLC to initialize
+      setTimeout(() => {
+        this.startTracking();
+      }, 3000);
+
+      // Handle VLC process events
+      this.vlcProcess.on('close', (code: number) => {
+        console.log(`🎮 VLC process exited with code ${code}`);
+        this.stopTracking();
+        this.vlcProcess = null;
+        this.currentMediaPath = null;
+      });
+
+      this.vlcProcess.on('error', (error: Error) => {
+        console.error('🎮 VLC process error:', error);
+        this.stopTracking();
+      });
+
       return { success: true };
     } catch (error: any) {
       return { success: false, error: error.message };
     }
+  }
+
+  private async makeVLCRequest(command: string): Promise<any> {
+    try {
+      const http = require('http');
+      const auth = Buffer.from(`:${this.httpPassword}`).toString('base64');
+      
+      return new Promise((resolve, reject) => {
+        const options = {
+          hostname: 'localhost',
+          port: this.httpPort,
+          path: `/requests/${command}`,
+          method: 'GET',
+          headers: {
+            'Authorization': `Basic ${auth}`
+          },
+          timeout: 5000
+        };
+
+        const req = http.request(options, (res: any) => {
+          let data = '';
+          res.on('data', (chunk: string) => data += chunk);
+          res.on('end', () => {
+            try {
+              const jsonData = JSON.parse(data);
+              resolve(jsonData);
+            } catch (e) {
+              resolve(null);
+            }
+          });
+        });
+
+        req.on('error', (err: Error) => {
+          reject(err);
+        });
+
+        req.on('timeout', () => {
+          req.destroy();
+          reject(new Error('VLC HTTP request timeout'));
+        });
+
+        req.end();
+      });
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  private startTracking(): void {
+    if (this.isTracking || !this.vlcProcess) return;
+    
+    console.log('🔄 Starting VLC playback tracking');
+    this.isTracking = true;
+    
+    this.trackingInterval = setInterval(async () => {
+      try {
+        const status = await this.makeVLCRequest('status.json');
+        if (status && this.currentMediaPath) {
+          const currentTime = status.time || 0;
+          const totalLength = status.length || 0;
+          const state = status.state || 'unknown';
+
+          // Send progress update to renderer
+          if (win && currentTime >= 0 && totalLength > 0) {
+            win.webContents.send('playback-progress', {
+              path: this.currentMediaPath,
+              time: currentTime,
+              length: totalLength,
+              state: state,
+              position: status.position || 0
+            });
+          }
+
+          // If playback has ended, stop tracking
+          if (state === 'stopped' || (totalLength > 0 && currentTime >= totalLength * 0.99)) {
+            console.log('🎬 Playback completed, stopping tracking');
+            this.stopTracking();
+          }
+        }
+      } catch (error) {
+        // If we can't connect to VLC HTTP interface, it might have closed
+        console.log('VLC HTTP interface not available, stopping tracking');
+        this.stopTracking();
+      }
+    }, 2000); // Update every 2 seconds
+  }
+
+  private stopTracking(): void {
+    if (this.trackingInterval) {
+      clearInterval(this.trackingInterval);
+      this.trackingInterval = null;
+    }
+    this.isTracking = false;
+    console.log('🔄 Stopped VLC playback tracking');
+  }
+
+  async getVLCStatus(): Promise<any> {
+    if (!this.vlcProcess) {
+      return { connected: false, message: 'VLC not running' };
+    }
+
+    try {
+      const status = await this.makeVLCRequest('status.json');
+      if (status) {
+        return {
+          connected: true,
+          state: status.state || 'unknown',
+          time: status.time || 0,
+          length: status.length || 0,
+          position: status.position || 0,
+          volume: status.volume || 0,
+          currentMedia: this.currentMediaPath
+        };
+      }
+    } catch (error) {
+      console.error('Failed to get VLC status:', error);
+    }
+    
+    return { connected: false, message: 'Unable to connect to VLC' };
+  }
+
+  async sendVLCCommand(command: string, value?: string): Promise<boolean> {
+    if (!this.vlcProcess) return false;
+
+    try {
+      let commandUrl = `status.json?command=${command}`;
+      if (value !== undefined) {
+        commandUrl += `&val=${encodeURIComponent(value)}`;
+      }
+      
+      await this.makeVLCRequest(commandUrl);
+      return true;
+    } catch (error) {
+      console.error(`Failed to send VLC command ${command}:`, error);
+      return false;
+    }
+  }
+
+  stopVLC(): void {
+    this.stopTracking();
+    if (this.vlcProcess) {
+      try {
+        this.vlcProcess.kill();
+      } catch (e) {
+        console.log('VLC process already terminated');
+      }
+      this.vlcProcess = null;
+    }
+    this.currentMediaPath = null;
   }
 }
 
@@ -106,6 +311,14 @@ protocol.registerSchemesAsPrivileged([
       stream: true,
       corsEnabled: true
     }
+  },
+  // Secure local app protocol so embeds see a proper origin instead of file://
+  {
+    scheme: 'app',
+    privileges: {
+      secure: true,
+      standard: true
+    }
   }
 ])
 
@@ -140,19 +353,50 @@ function createWindow() {
     autoHideMenuBar: true,
   })
 
+  // Apply a modern desktop Chrome user-agent to the window to avoid YouTube blocking
+  const forcedUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+  try {
+    win.webContents.setUserAgent(forcedUA);
+  } catch (err) {
+    console.warn('Unable to set webContents userAgent:', err);
+  }
+
   // Hide default menu bar while keeping the native title bar
   win.setMenu(null)
 
-  // Test active push message to Renderer-process.
+  // Test active push message to Renderer-process and check EME support in renderer.
   win.webContents.on('did-finish-load', () => {
     win?.webContents.send('main-process-message', (new Date).toLocaleString())
+
+    // Probe EME (requestMediaKeySystemAccess) availability in the renderer and log —
+    // useful to detect missing Widevine in packaged builds which often cause 152/153 errors.
+    win?.webContents.executeJavaScript('!!(navigator.requestMediaKeySystemAccess)').then((hasEME) => {
+      console.log('🔍 Renderer EME available:', hasEME);
+      if (!hasEME && app.isPackaged) {
+        console.warn('⚠️ EME (Widevine) not available in packaged app — this can cause YouTube error 152/153');
+      }
+    }).catch(err => console.warn('EME probe failed:', err));
   })
 
   if (process.env.VITE_DEV_SERVER_URL) {
     win.loadURL(process.env.VITE_DEV_SERVER_URL)
   } else {
-    // win.loadFile('dist/index.html')
-    win.loadFile(path.join(process.env.DIST || '', 'index.html'))
+    // Serve production files over a secure `app://` protocol to provide a valid origin
+    const distPath = process.env.DIST || path.join(__dirname, '../dist');
+    try {
+      protocol.registerFileProtocol('app', (request, callback) => {
+        const url = new URL(request.url);
+        let pathname = decodeURIComponent(url.pathname);
+        // Trim leading slashes
+        pathname = pathname.replace(/^\/+/, '');
+        const filePath = path.join(distPath, pathname || 'index.html');
+        callback({ path: filePath });
+      });
+      win.loadURL('app://./index.html');
+    } catch (err) {
+      console.error('Failed to register app protocol, falling back to loadFile:', err);
+      win.loadFile(path.join(process.env.DIST || '', 'index.html'));
+    }
   }
 }
 
@@ -162,8 +406,12 @@ app.on('window-all-closed', () => {
   }
 })
 
-// Force a standard Chrome User-Agent globally
-app.userAgentFallback = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+// Force a standard Chrome User-Agent globally (use recent Chrome version to avoid player blocking)
+app.userAgentFallback = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+
+// Enable Widevine CDM so DRM-protected streams (YouTube/HTML5) can play when available.
+// Note: packaging must include platform Widevine libraries for full DRM support.
+app.commandLine.appendSwitch('enable-widevine-cdm');
 
 // Disable some security features that might interfere with iframes in local builds
 app.commandLine.appendSwitch('disable-site-isolation-trials');
@@ -203,7 +451,7 @@ app.whenReady().then(() => {
   // Fix for YouTube embeds in production - Target the partition specifically
   const youtubeSession = session.fromPartition('persist:youtube');
   youtubeSession.webRequest.onBeforeSendHeaders(
-    { urls: ['*://*.youtube.com/*', '*://youtube.com/*', '*://www.youtube-nocookie.com/*'] },
+    { urls: ['*://*.youtube.com/*', '*://youtube.com/*', '*://www.youtube-nocookie.com/*', '*://*.ytimg.com/*', '*://*.googlevideo.com/*'] },
     (details, callback) => {
       const headers = { ...details.requestHeaders };
 
@@ -211,6 +459,8 @@ app.whenReady().then(() => {
       headers['Referer'] = 'https://www.youtube.com/';
       headers['Origin'] = 'https://www.youtube.com';
       headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+      // Ensure the referrer policy is strict-origin-when-cross-origin
+      headers['Referrer-Policy'] = 'strict-origin-when-cross-origin';
 
       // Clean up Electron/Sec-Ch-Ua headers
       delete headers['Sec-Ch-Ua'];
@@ -220,6 +470,27 @@ app.whenReady().then(() => {
       callback({ requestHeaders: headers });
     }
   );
+
+  // --- ALSO: apply the same header fixes to the default session so inline iframes (modal) work in packaged EXE ---
+  try {
+    session.defaultSession.webRequest.onBeforeSendHeaders(
+      { urls: ['*://*.youtube.com/*', '*://youtube.com/*', '*://www.youtube-nocookie.com/*', '*://*.ytimg.com/*', '*://*.googlevideo.com/*'] },
+      (details, callback) => {
+        const headers = { ...details.requestHeaders };
+        headers['Referer'] = 'https://www.youtube.com/';
+        headers['Origin'] = 'https://www.youtube.com';
+        headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+        headers['Referrer-Policy'] = 'strict-origin-when-cross-origin';
+        delete headers['Sec-Ch-Ua'];
+        delete headers['Sec-Ch-Ua-Mobile'];
+        delete headers['Sec-Ch-Ua-Platform'];
+        callback({ requestHeaders: headers });
+      }
+    );
+    console.log('✅ Default session patched for YouTube header fixes');
+  } catch (err) {
+    console.warn('⚠️ Could not patch default session for YouTube headers:', err);
+  }
 
   // Allow media / fullscreen / autoplay related permissions for the youtube session
   try {
@@ -235,6 +506,19 @@ app.whenReady().then(() => {
     });
   } catch (err) {
     console.warn('⚠️ Could not set permission handler for youtube session:', err);
+  }
+
+  // Also set a permissive handler on the default session for in-modal iframes
+  try {
+    session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
+      if (permission === 'fullscreen' || permission === 'openExternal' || permission === 'media' || permission === 'clipboard-read') {
+        return callback(true);
+      }
+      return callback(false);
+    });
+    console.log('✅ Default session permission handler installed');
+  } catch (err) {
+    console.warn('⚠️ Could not install default session permission handler:', err);
   }
 
   console.log('✅ About to create window');
@@ -254,12 +538,25 @@ ipcMain.handle('scan-directory', async (event, dirPath: string) => {
   }
 });
 
-ipcMain.handle('open-file', async (event, filePath: string) => {
-  console.log('📂 Main process: Opening file:', filePath);
+ipcMain.handle('open-file', async (event, filePath: string, startTime?: number) => {
+  console.log('📂 Main process: Opening file with VLC:', filePath, startTime ? `(start time: ${startTime}s)` : '');
   try {
-    await shell.openPath(filePath);
-  } catch (error) {
+    // Use VLC media player with tracking for video files
+    const videoExtensions = ['.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.ts', '.mpg', '.mpeg'];
+    const fileExt = path.extname(filePath).toLowerCase();
+    
+    if (videoExtensions.includes(fileExt)) {
+      // Use VLC for video files with tracking capabilities
+      const result = await mediaPlayer.playMedia(filePath, { startTime, fullscreen: true });
+      return result;
+    } else {
+      // Use default handler for non-video files
+      await shell.openPath(filePath);
+      return { success: true };
+    }
+  } catch (error: any) {
     console.error('📂 Main process: Error opening file:', error);
+    return { success: false, error: error.message };
   }
 });
 
@@ -280,6 +577,41 @@ ipcMain.handle('play-media-vlc', async (event, { filePath, startTime, fullscreen
     return result;
   } catch (error: any) {
     console.error('🎮 Main process: Error playing media with VLC:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// VLC Status IPC handler
+ipcMain.handle('get-vlc-status', async () => {
+  try {
+    const status = await mediaPlayer.getVLCStatus();
+    return status;
+  } catch (error: any) {
+    console.error('🎮 Main process: Error getting VLC status:', error);
+    return { connected: false, message: error.message };
+  }
+});
+
+// VLC Command IPC handler
+ipcMain.handle('send-vlc-command', async (event, { command, value }: { command: string; value?: string }) => {
+  try {
+    const success = await mediaPlayer.sendVLCCommand(command, value);
+    console.log(`🎮 VLC command sent: ${command}${value ? `=${value}` : ''}, success: ${success}`);
+    return { success };
+  } catch (error: any) {
+    console.error('🎮 Main process: Error sending VLC command:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Stop VLC IPC handler
+ipcMain.handle('stop-vlc', async () => {
+  try {
+    mediaPlayer.stopVLC();
+    console.log('🎮 VLC stopped successfully');
+    return { success: true };
+  } catch (error: any) {
+    console.error('🎮 Main process: Error stopping VLC:', error);
     return { success: false, error: error.message };
   }
 });
@@ -305,10 +637,95 @@ ipcMain.handle('open-trailer-window', async (event, { url, title }: { url: strin
     // Set User-Agent to look like Chrome
     trailerWindow.webContents.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
-    trailerWindow.loadURL(url);
+    // If loading a YouTube URL directly, pass extra headers to ensure correct Referer + Referrer-Policy
+    if (/youtube\.com|youtube-nocookie\.com/.test(url)) {
+      const extraHeaders = 'Referer: https://www.youtube.com/\r\nReferrer-Policy: strict-origin-when-cross-origin\r\nOrigin: https://www.youtube.com\r\n';
+      trailerWindow.loadURL(url, { extraHeaders });
+    } else {
+      trailerWindow.loadURL(url);
+    }
+
     trailerWindow.setMenu(null);
   } catch (error) {
     console.error('🎬 Main process: Error opening trailer window:', error);
+  }
+});
+
+// Return the absolute path to the trailer webview preload script so the renderer can attach it to <webview>
+ipcMain.handle('get-trailer-preload-path', async () => {
+  try {
+    const preloadPath = path.join(__dirname, 'trailer-preload.js');
+    if (fs.existsSync(preloadPath)) return preloadPath;
+    console.warn('Trailer preload not found at', preloadPath);
+    return '';
+  } catch (err) {
+    console.error('Error returning trailer preload path:', err);
+    return '';
+  }
+});
+
+// Quickly compute a SHA-1 hash for a file (quick mode reads first+last 1MB, full mode reads entire file)
+ipcMain.handle('compute-file-hash', async (event, { filePath, options }: { filePath: string; options?: { mode?: 'quick' | 'full' } }) => {
+  try {
+    const mode = options?.mode || 'quick';
+    const stat = await fs.promises.stat(filePath);
+    const size = stat.size || 0;
+    const crypto = await import('crypto');
+    const hash = crypto.createHash('sha1');
+
+    if (mode === 'full' || size <= 2 * 1024 * 1024) {
+      // small files or explicit full mode: hash the entire file
+      const stream = fs.createReadStream(filePath);
+      for await (const chunk of stream) hash.update(chunk);
+      return { hash: hash.digest('hex'), method: 'full' };
+    }
+
+    // quick: read first and last 1MB and hash them (fast, reliable for duplicates)
+    const chunkSize = 1024 * 1024; // 1MB
+    const fd = await fs.promises.open(filePath, 'r');
+    try {
+      const bufs: Buffer[] = [];
+      const firstLen = Math.min(chunkSize, size);
+      const firstBuf = Buffer.alloc(firstLen);
+      await fd.read(firstBuf, 0, firstLen, 0);
+      bufs.push(firstBuf);
+
+      if (size > chunkSize) {
+        const lastLen = Math.min(chunkSize, size - chunkSize);
+        const lastBuf = Buffer.alloc(lastLen);
+        const lastPos = Math.max(0, size - lastLen);
+        await fd.read(lastBuf, 0, lastLen, lastPos);
+        bufs.push(lastBuf);
+      }
+
+      for (const b of bufs) hash.update(b);
+      return { hash: hash.digest('hex'), method: 'quick' };
+    } finally {
+      await fd.close();
+    }
+  } catch (err) {
+    console.error('Error computing file hash:', err);
+    return { hash: null, error: String(err) };
+  }
+});
+// Fetch news via main process to avoid CORS / origin issues in packaged apps
+ipcMain.handle('fetch-news', async (event, query: string) => {
+  const NEWS_API_KEY = process.env.NEWS_API_KEY || 'f0de56da99d04da99f846ad839959950';
+  const NEWS_API_BASE_URL = 'https://newsapi.org/v2';
+
+  try {
+    const url = `${NEWS_API_BASE_URL}/everything?q=${encodeURIComponent(query)}&sortBy=publishedAt&language=en&pageSize=10&apiKey=${NEWS_API_KEY}`;
+    console.log('🌐 Main process: proxying news request for', query);
+    const res = await fetch(url, { method: 'GET' });
+    if (!res.ok) {
+      console.warn('News API returned', res.status);
+      return { status: 'error', statusCode: res.status, articles: [] };
+    }
+    const data = await res.json();
+    return data;
+  } catch (err) {
+    console.error('Error fetching news in main process:', err);
+    return { status: 'error', statusCode: 500, articles: [] };
   }
 });
 // IPC handler to delete a file (used by DuplicateScanner)
@@ -374,7 +791,7 @@ ipcMain.handle('load-library-cache', async () => {
   }
 });
 
-ipcMain.handle('download-image', async (event, { url, fileName }: { url: string; fileName: string }) => {
+ipcMain.handle('download-image', async (event, { url, fileName, options }: { url: string; fileName: string; options?: { overwrite?: boolean } }) => {
   try {
     const userDataPath = app.getPath('userData');
     const cacheDir = path.join(userDataPath, 'image_cache');
@@ -383,10 +800,13 @@ ipcMain.handle('download-image', async (event, { url, fileName }: { url: string;
     }
 
     const filePath = path.join(cacheDir, fileName);
-    if (fs.existsSync(filePath)) {
+
+    // If file exists and overwrite is not requested, return it
+    if (fs.existsSync(filePath) && !options?.overwrite) {
       return filePath.replace(/\\/g, '/');
     }
 
+    // Attempt to fetch the image and write/overwrite the cache file
     const response = await fetch(url);
     if (!response.ok) throw new Error(`Failed to fetch image: ${response.statusText}`);
     const buffer = await response.arrayBuffer();
@@ -727,13 +1147,19 @@ async function sortFiles(event: any, options: SortOptions): Promise<SortResults>
 // Helper function to recursively scan directory for media files
 async function scanDirectoryForMediaFiles(dirPath: string, mediaExtensions: string[]): Promise<string[]> {
   const results: string[] = [];
+  const visitedDirs = new Set<string>();
+  const seenFiles = new Set<string>();
 
   async function scanRecursive(currentPath: string) {
     try {
-      const items = await fs.promises.readdir(currentPath, { withFileTypes: true });
+      const resolvedPath = path.resolve(currentPath);
+      if (visitedDirs.has(resolvedPath)) return;
+      visitedDirs.add(resolvedPath);
+
+      const items = await fs.promises.readdir(resolvedPath, { withFileTypes: true });
 
       for (const item of items) {
-        const fullPath = path.join(currentPath, item.name);
+        const fullPath = path.join(resolvedPath, item.name);
 
         try {
           if (item.isDirectory()) {
@@ -741,8 +1167,9 @@ async function scanDirectoryForMediaFiles(dirPath: string, mediaExtensions: stri
             await scanRecursive(fullPath);
           } else if (item.isFile()) {
             const ext = path.extname(item.name).toLowerCase();
-            if (mediaExtensions.includes(ext)) {
+            if (mediaExtensions.includes(ext) && !seenFiles.has(fullPath)) {
               results.push(fullPath);
+              seenFiles.add(fullPath);
             }
           }
         } catch (fileError) {
@@ -762,21 +1189,28 @@ async function scanDirectoryForMediaFiles(dirPath: string, mediaExtensions: stri
 // Helper function to recursively scan directory for media files (for duplicate checking)
 async function scanDirectoryForMediaFilesRecursive(dirPath: string, mediaExtensions: string[]): Promise<string[]> {
   const results: string[] = [];
+  const visitedDirs = new Set<string>();
+  const seenFiles = new Set<string>();
 
   async function scanRecursive(currentPath: string) {
     try {
-      const items = await fs.promises.readdir(currentPath, { withFileTypes: true });
+      const resolvedPath = path.resolve(currentPath);
+      if (visitedDirs.has(resolvedPath)) return;
+      visitedDirs.add(resolvedPath);
+
+      const items = await fs.promises.readdir(resolvedPath, { withFileTypes: true });
 
       for (const item of items) {
-        const fullPath = path.join(currentPath, item.name);
+        const fullPath = path.join(resolvedPath, item.name);
 
         if (item.isDirectory()) {
           // Recursively scan subdirectory
           await scanRecursive(fullPath);
         } else if (item.isFile()) {
           const ext = path.extname(item.name).toLowerCase();
-          if (mediaExtensions.includes(ext)) {
+          if (mediaExtensions.includes(ext) && !seenFiles.has(fullPath)) {
             results.push(fullPath);
+            seenFiles.add(fullPath);
           }
         }
       }
@@ -835,10 +1269,31 @@ async function isPotentialDuplicate(sourcePath: string, destPath: string, librar
         const sizeDiff = Math.abs(sourceSize - existingSize) / Math.max(sourceSize, existingSize);
 
         if (sizeDiff <= 0.1) {
-          // If the size is very similar, check if the name is also similar
+          // If the size is very similar, parse filenames to avoid false positives across episodes
           const existingFileName = path.basename(existingFile, path.extname(existingFile));
           const cleanedExistingTitle = cleanMediaTitle(existingFileName);
 
+          try {
+            const srcParsed = parseMediaFilename(path.basename(sourcePath));
+            const existingParsed = parseMediaFilename(path.basename(existingFile));
+
+            // If both look like series with season/episode info, only treat as duplicate when S/E match
+            if (srcParsed.type === 'series' && existingParsed.type === 'series' && srcParsed.season && srcParsed.episode && existingParsed.season && existingParsed.episode) {
+              if (srcParsed.season === existingParsed.season && srcParsed.episode === existingParsed.episode) {
+                console.log(`⏭️ Skipping duplicate (same series S${srcParsed.season}E${srcParsed.episode}): ${fileName} matches ${path.basename(existingFile)}`);
+                return true;
+              } else {
+                // Different episode numbers -> NOT a duplicate
+                console.log(`ℹ️ Not a duplicate: same show but different episodes (${srcParsed.season}x${srcParsed.episode} vs ${existingParsed.season}x${existingParsed.episode})`);
+                continue;
+              }
+            }
+          } catch (parseErr) {
+            // If parsing fails, fall back to simple name match below
+            console.warn('Series parsing failed during duplicate check:', parseErr);
+          }
+
+          // Fallback: if cleaned titles match exactly, consider duplicate
           if (cleanedSourceTitle.toLowerCase() === cleanedExistingTitle.toLowerCase()) {
             console.log(`⏭️ Skipping duplicate (found similar in library): ${fileName} matches ${path.basename(existingFile)}`);
             return true;

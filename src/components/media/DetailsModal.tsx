@@ -1,11 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { X, Tv, Play, BookmarkPlus, Check, Youtube, Maximize2, ArrowLeft, Star, Heart } from 'lucide-react';
+import { useNetworkStatus } from '../../hooks/useNetworkStatus';
 import { TMDBResult, MediaDetails, Video } from '../../types/media';
 import { getImageUrl, getDetails, getVideos, getIMDbRating, getEpisodeDetails, getSeasonDetails, getSimilar, searchByGenre } from '../../api/tmdb';
 import { libraryCache } from '../../utils/libraryCache';
 import { addToMyList, removeFromMyList, isInMyList as checkIsInMyList } from '../../utils/myList';
 import { getRecentlyWatched, normalizePath } from '../../utils/recentlyWatched';
 import { getTopGenrePreferences, getPreferredGenreIds } from '../../utils/genrePreferences';
+
+const PLACEHOLDER_BACKDROP = new URL('/placeholder-backdrop.png', import.meta.url).href;
 
 interface Episode {
   season: number;
@@ -30,20 +33,24 @@ interface DetailsModalProps {
   isOpen: boolean;
   onClose: () => void;
   autoPlayTrailer?: boolean;
+  overrideTrailerKey?: string; // Optional override: use this YouTube key instead of the TMDB-provided trailer
   onPlay?: (item: TMDBResult) => void;
   onPlayEpisode?: (episode: Episode) => void;
   forceFetchEpisodes?: boolean;
   hideSimilar?: boolean;
+  hideMainPlay?: boolean; // Hide the big Play button in the hero (useful for Series views)
 }
 
-const DetailsModal: React.FC<DetailsModalProps> = ({ item, isOpen, onClose, autoPlayTrailer = false, onPlay, onPlayEpisode, forceFetchEpisodes = false }) => {
+const DetailsModal: React.FC<DetailsModalProps> = ({ item, isOpen, onClose, autoPlayTrailer = false, overrideTrailerKey, onPlay, onPlayEpisode, forceFetchEpisodes = false, hideMainPlay = false }) => {
   const [details, setDetails] = useState<MediaDetails | null>(null);
   const [videos, setVideos] = useState<Video[]>([]);
   const [showTrailer, setShowTrailer] = useState(false);
   const [loading, setLoading] = useState(false);
+  const { isOnline } = useNetworkStatus();
   const [episodes, setEpisodes] = useState<Episode[]>([]);
   const [selectedSeason, setSelectedSeason] = useState<number | null>(null);
   const [loadingEpisodes, setLoadingEpisodes] = useState(false);
+  const [attemptedEpisodeFetch, setAttemptedEpisodeFetch] = useState(false);
   const [inList, setInList] = useState(false);
   const [isTheaterMode, setIsTheaterMode] = useState(false);
   const [similar, setSimilar] = useState<TMDBResult[]>([]);
@@ -55,8 +62,22 @@ const DetailsModal: React.FC<DetailsModalProps> = ({ item, isOpen, onClose, auto
   const [loadingImdb, setLoadingImdb] = useState(false);
 
   const modalContentRef = useRef<HTMLDivElement>(null);
+  // Used for either the iframe OR the Electron <webview> element
+  const trailerIframeRef = useRef<HTMLElement | null>(null);
 
-  const trailer = videos.find(v => v.site === 'YouTube' && v.type === 'Trailer') ||
+  // Playback / trailer error states
+  const [trailerError, setTrailerError] = useState<{ code?: number | string; message?: string } | null>(null);
+  const [playbackError, setPlaybackError] = useState<string | null>(null);
+  // Allow switching embed host when a trailer is blocked (youtube-nocookie sometimes blocks more videos)
+  const [trailerHost, setTrailerHost] = useState<'www.youtube-nocookie.com' | 'www.youtube.com'>('www.youtube-nocookie.com');
+
+  // Electron webview preload path (when available) — used to load the full YouTube watch page inside a webview
+  const [trailerPreloadPath, setTrailerPreloadPath] = useState<string | null>(null);
+
+  // If an override key was provided (Home requested a specific season trailer), prefer that.
+  const overrideVideo = overrideTrailerKey ? ({ id: 'override', key: overrideTrailerKey, name: 'Season Trailer', site: 'YouTube', type: 'Trailer', official: true, published_at: new Date().toISOString() } as Video) : null;
+
+  const trailer = overrideVideo || videos.find(v => v.site === 'YouTube' && v.type === 'Trailer') ||
     videos.find(v => v.site === 'YouTube' && ['Teaser', 'Clip'].includes(v.type));
 
 
@@ -230,12 +251,14 @@ const DetailsModal: React.FC<DetailsModalProps> = ({ item, isOpen, onClose, auto
   }, [isOpen, currentItem?.id]);
 
   const scanForEpisodesFromTMDB = async () => {
+    setAttemptedEpisodeFetch(false);
     if (!currentItem || !details || (currentItem.media_type !== 'tv' && !currentItem.first_air_date && !details.number_of_seasons)) return;
 
     setLoadingEpisodes(true);
     try {
       const episodeList: Episode[] = [];
       const numSeasons = details.number_of_seasons || 1;
+      console.log('Scanning TMDB for episodes:', currentItem.id, 'seasons:', numSeasons);
       const seasonPromises = [];
       for (let s = 1; s <= numSeasons; s++) {
         seasonPromises.push(getSeasonDetails(currentItem.id, s));
@@ -262,6 +285,7 @@ const DetailsModal: React.FC<DetailsModalProps> = ({ item, isOpen, onClose, auto
         }
       });
 
+      console.log('TMDB episodes fetched:', episodeList.length);
       setEpisodes(episodeList);
       const uniqueSeasons = Array.from(new Set(episodeList.map(ep => ep.season))).sort((a, b) => a - b);
       setSelectedSeason(prev => prev ?? uniqueSeasons[0] ?? null);
@@ -269,6 +293,7 @@ const DetailsModal: React.FC<DetailsModalProps> = ({ item, isOpen, onClose, auto
       console.error('Error fetching episodes from TMDB:', error);
     } finally {
       setLoadingEpisodes(false);
+      setAttemptedEpisodeFetch(true);
     }
   };
 
@@ -352,6 +377,7 @@ const DetailsModal: React.FC<DetailsModalProps> = ({ item, isOpen, onClose, auto
   }, [episodes.length]);
 
   const scanForEpisodes = async () => {
+    setAttemptedEpisodeFetch(false);
     if (!currentItem || !window.electronAPI) return;
     const paths = currentItem.local_paths || (currentItem.local_path ? [currentItem.local_path] : []);
     if (paths.length === 0) return;
@@ -414,12 +440,16 @@ const DetailsModal: React.FC<DetailsModalProps> = ({ item, isOpen, onClose, auto
       console.error('Error scanning for episodes:', error);
     } finally {
       setLoadingEpisodes(false);
+      setAttemptedEpisodeFetch(true);
     }
   };
 
   useEffect(() => {
     if (currentItem && isOpen) {
-      setShowTrailer(shouldAutoPlayNext || autoPlayTrailer);
+      const shouldPlay = shouldAutoPlayNext || autoPlayTrailer;
+      // Only attempt autoplay when online to avoid iframe load errors when offline
+      setShowTrailer(isOnline ? shouldPlay : false);
+      // autoplay should show trailer; leave unmuted by default
       setShouldAutoPlayNext(false); // Reset after use
       fetchDetails();
       const isTVItem = currentItem.media_type === 'tv' || currentItem.first_air_date;
@@ -427,7 +457,78 @@ const DetailsModal: React.FC<DetailsModalProps> = ({ item, isOpen, onClose, auto
         scanForEpisodes();
       }
     }
-  }, [currentItem, isOpen, autoPlayTrailer, shouldAutoPlayNext]);
+  }, [currentItem, isOpen, autoPlayTrailer, shouldAutoPlayNext, isOnline]);
+
+  // Listen for YouTube iframe postMessage events so we can show a friendly error when a trailer
+  // is blocked/unavailable (e.g. "This video is unavailable / error code ..."). The embed uses
+  // enablejsapi=1 so the player will post JSON messages we can parse.
+  useEffect(() => {
+    if (!showTrailer || !trailer) {
+      setTrailerError(null);
+      return;
+    }
+
+    const handleYouTubeMessage = (ev: MessageEvent) => {
+      if (!ev.data) return;
+      let payload: any = ev.data;
+      try {
+        // YouTube sometimes posts stringified JSON
+        if (typeof ev.data === 'string') payload = JSON.parse(ev.data);
+      } catch (err) {
+        return;
+      }
+
+      // Look for onError events from the YT player
+      if (payload && payload.event === 'onError') {
+        const code = payload?.data ?? payload?.info ?? 'unknown';
+        console.warn('YouTube iframe error detected:', code, payload);
+        setTrailerError({ code, message: `YouTube player error ${String(code)}` });
+      }
+    };
+
+    window.addEventListener('message', handleYouTubeMessage);
+    return () => window.removeEventListener('message', handleYouTubeMessage);
+  }, [showTrailer, trailer]);
+
+  // Keep theater mode synced with fullscreen state
+  useEffect(() => {
+    const onFsChange = () => {
+      setIsTheaterMode(Boolean(document.fullscreenElement));
+    };
+    document.addEventListener('fullscreenchange', onFsChange);
+    return () => document.removeEventListener('fullscreenchange', onFsChange);
+  }, []);
+
+  // When running in Electron, request the trailer webview preload path so we can load the full YouTube watch page
+  useEffect(() => {
+    let mounted = true;
+    if (showTrailer && trailer && (window as any).electronAPI?.getTrailerPreloadPath && !trailerPreloadPath) {
+      (window as any).electronAPI.getTrailerPreloadPath()
+        .then((p: string) => { if (mounted) setTrailerPreloadPath(p); })
+        .catch((err: any) => console.warn('Failed to get trailer preload path:', err));
+    }
+    return () => { mounted = false; };
+  }, [showTrailer, trailer, trailerPreloadPath]);
+
+  // Attach listeners to Electron webview when present (to detect load failures / dom-ready)
+  useEffect(() => {
+    if (!showTrailer || !(window as any).electronAPI) return;
+    const el = trailerIframeRef.current as any;
+    if (!el || typeof el.addEventListener !== 'function') return;
+
+    const onDomReady = () => setTrailerError(null);
+    const onFail = (e: any) => {
+      console.warn('Trailer webview failed to load:', e);
+      setTrailerError({ message: 'Failed to load YouTube watch page inside the app.' } as any);
+    };
+
+    el.addEventListener('dom-ready', onDomReady);
+    el.addEventListener('did-fail-load', onFail);
+    return () => {
+      try { el.removeEventListener('dom-ready', onDomReady); } catch (e) {}
+      try { el.removeEventListener('did-fail-load', onFail); } catch (e) {}
+    };
+  }, [showTrailer, trailerPreloadPath]);
 
   useEffect(() => {
     const isTVItem = currentItem?.media_type === 'tv' || currentItem?.first_air_date;
@@ -481,21 +582,42 @@ const DetailsModal: React.FC<DetailsModalProps> = ({ item, isOpen, onClose, auto
     return (bytes / Math.pow(1024, i)).toFixed(2) + ' ' + ['B', 'KB', 'MB', 'GB', 'TB'][i];
   };
 
-  const exitTrailer = () => {
+  const exitTrailer = async () => {
     setShowTrailer(false);
     setIsTheaterMode(false);
-  };
-
-  const handlePlayTrailer = () => {
-    if (trailer) {
-      setShowTrailer(true);
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+    } catch (err) {
+      console.warn('Error exiting fullscreen:', err);
     }
   };
 
+  const handlePlayTrailer = () => {
+    if (!trailer) return;
+    if (!isOnline) {
+      // If offline, open external YouTube watch page instead of trying to load the iframe
+      if (window.electronAPI?.openExternal) {
+        window.electronAPI.openExternal(`https://www.youtube.com/watch?v=${trailer.key}`);
+      }
+      return;
+    }
+
+    // Show the inline iframe (do not auto-enter fullscreen)
+    setShowTrailer(true);
+  };
+
   const handlePopOutTrailer = () => {
+    if (!trailer) return;
+    if (!isOnline) {
+      if (window.electronAPI?.openExternal) {
+        window.electronAPI.openExternal(`https://www.youtube.com/watch?v=${trailer.key}`);
+      }
+      return;
+    }
+
     if (trailer && window.electronAPI) {
       window.electronAPI.openTrailerWindow({
-        url: `https://www.youtube.com/embed/${trailer.key}?autoplay=1&modestbranding=1&rel=0&iv_load_policy=3`,
+        url: `https://www.youtube.com/embed/${trailer.key}?autoplay=1&mute=0&modestbranding=1&rel=0&iv_load_policy=3`,
         title: `${displayTitle} - Trailer`
       });
       exitTrailer();
@@ -519,23 +641,96 @@ const DetailsModal: React.FC<DetailsModalProps> = ({ item, isOpen, onClose, auto
     }
   };
 
+  // Use the current page origin for the YouTube origin param and allow switching hosts when blocked
+  const pageOrigin = (typeof window !== 'undefined' && window.location && window.location.origin) ? encodeURIComponent(window.location.origin) : encodeURIComponent('https://localhost');
+  const trailerSrc = trailer ? `https://${trailerHost}/embed/${trailer.key}?origin=${pageOrigin}&enablejsapi=1&autoplay=1&mute=0&modestbranding=1&rel=0&iv_load_policy=3&playsinline=1` : '';
+
   return (
     <div className="fixed inset-0 z-[200] bg-black/85 backdrop-blur-md flex items-center justify-center p-4 sm:p-6" onClick={handleBackdropClick}>
       <div ref={modalContentRef} className="w-full max-w-[1000px] h-full max-h-[92vh] overflow-y-auto overscroll-contain flex flex-col rounded-3xl border border-white/10 bg-[#111] relative shadow-2xl scrollbar-hide">
+
+        {/* Playback error banner */}
+        {playbackError && (
+          <div className="absolute top-6 left-1/2 transform -translate-x-1/2 bg-red-700/90 text-white px-4 py-2 rounded-lg z-50 flex items-center gap-3 border border-red-500/30">
+            <strong className="text-sm">Playback error:</strong>
+            <span className="text-sm text-zinc-100 truncate max-w-[40ch]">{playbackError}</span>
+            <div className="ml-3 flex gap-2">
+              <button onClick={() => { try { navigator?.clipboard?.writeText(playbackError); } catch (e) {} }} className="text-xs px-2 py-1 bg-white/10 rounded">Copy</button>
+              <button onClick={() => setPlaybackError(null)} className="text-xs px-2 py-1 bg-white/10 rounded">Dismiss</button>
+            </div>
+          </div>
+        )}
 
         {/* Hero Section */}
         <div className={`relative transition-all duration-700 ease-in-out bg-black overflow-hidden flex-shrink-0 ${isTheaterMode ? 'h-full z-50' : 'aspect-video'
           }`}>
           {showTrailer && trailer ? (
-            <div className="absolute inset-0 z-10 bg-black">
-              <iframe
-                src={`https://www.youtube.com/embed/${trailer.key}?autoplay=1&modestbranding=1&rel=0&iv_load_policy=3&origin=${window.location.origin}`}
-                className="w-full h-full"
-                allowFullScreen
-                allow="autoplay; encrypted-media; fullscreen"
-                frameBorder="0"
-                title="Trailer"
-              />
+            <div className="absolute inset-0 z-10 bg-black flex items-center justify-center">
+              {((window as any).electronAPI && trailerPreloadPath) ? (
+                /* Use an Electron <webview> and let the preload aggressively strip YouTube page chrome so only the video/player is visible. */
+                // @ts-ignore - Electron webview element
+                <webview
+                  ref={(el) => { trailerIframeRef.current = el as HTMLElement | null; }}
+                  src={`https://www.youtube.com/watch?v=${trailer.key}`}
+                  preload={trailerPreloadPath!}
+                  partition="persist:youtube"
+                  className="w-full h-full min-h-[360px]"
+                  allowFullScreen
+                  webpreferences="contextIsolation=yes"
+                />
+              ) : (
+                <iframe
+                  ref={el => { trailerIframeRef.current = el as HTMLIFrameElement | null; }}
+                  src={trailerSrc}
+                  className="w-full h-full min-h-[360px]"
+                  referrerPolicy="strict-origin-when-cross-origin"
+                  allowFullScreen
+                  allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
+                  frameBorder="0"
+                  title="Trailer"
+                  onLoad={() => setTrailerError(null)}
+                />
+              )}
+
+              {/* Trailer error overlay (e.g. "This video is unavailable" / YouTube error codes) */}
+              {trailerError && (
+                <div className="absolute inset-0 z-30 flex items-center justify-center p-6">
+                  <div className="max-w-lg bg-[#0b0b0b] border border-red-600/30 rounded-2xl p-6 text-center shadow-xl">
+                    <div className="text-red-400 font-black text-2xl mb-3">This video is unavailable</div>
+                    <p className="text-sm text-zinc-300 mb-4">YouTube returned an error (code: {String(trailerError.code)}). Possible causes: the video owner disallowed embedding, or the packaged app lacks EME/Widevine support (common for Error 152/153).</p>
+
+                    {/* Offer an alternate embed host + actionable fixes for packaged builds */}
+                    <div className="flex flex-col sm:flex-row items-center justify-center gap-3 mb-3">
+                      <button onClick={handleExternalYouTube} className="px-4 py-2 bg-white text-black rounded-lg font-bold">Open on YouTube</button>
+
+                      <button
+                        onClick={() => {
+                          // Try the alternative host and reload the iframe
+                          setTrailerHost(prev => prev === 'www.youtube-nocookie.com' ? 'www.youtube.com' : 'www.youtube-nocookie.com');
+                          setTrailerError(null);
+                          setShowTrailer(false);
+                          setTimeout(() => setShowTrailer(true), 120);
+                        }}
+                        className="px-4 py-2 bg-white/10 text-white border border-white/10 rounded-lg"
+                      >Try alternate embed</button>
+
+                      <button onClick={() => { if (window.electronAPI?.openExternal) window.electronAPI.openExternal('https://www.electronjs.org/docs/latest/tutorial/security'); }} className="px-4 py-2 bg-white/10 text-white border border-white/10 rounded-lg">Packaging tips</button>
+                    </div>
+
+                    <div className="flex items-center justify-center gap-3">
+                      <button onClick={() => { try { navigator?.clipboard?.writeText(`YouTube error ${String(trailerError.code)} for video ${trailer?.key}`); } catch (e) {} }} className="px-3 py-2 bg-white/10 text-white border border-white/10 rounded-lg">Copy</button>
+                      <button onClick={() => { setTrailerError(null); exitTrailer(); }} className="px-3 py-2 bg-white/10 text-white border border-white/10 rounded-lg">Dismiss</button>
+                    </div>
+
+                    {/* Targeted advice for 152/153 */}
+                    {(trailerError.code === 152 || trailerError.code === '152' || trailerError.code === 153 || trailerError.code === '153') && (
+                      <div className="mt-4 text-xs text-zinc-400 text-left">
+                        <strong>Packaged app note:</strong> Error 152/153 often means EME/Widevine is unavailable in the packaged build. Ensure Electron &gt;= 25, set a desktop user‑agent, enable Widevine with <code>app.commandLine.appendSwitch('enable-widevine-cdm')</code>, and include platform Widevine binaries when packaging.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
 
                 {/* Cinematic Floating Controls */}
                 <div className="absolute top-6 left-6 flex items-center gap-2 z-[200]">
@@ -562,6 +757,7 @@ const DetailsModal: React.FC<DetailsModalProps> = ({ item, isOpen, onClose, auto
                       {isTheaterMode ? 'Exit Cinema' : 'Cinema Mode'}
                     </button>
 
+
                     <button
                       onClick={handlePopOutTrailer}
                       className="flex items-center gap-2 px-4 py-2 bg-white/10 hover:bg-white/20 backdrop-blur-xl rounded-full text-white text-xs font-black uppercase tracking-tighter transition-all border border-white/10 shadow-2xl"
@@ -582,12 +778,12 @@ const DetailsModal: React.FC<DetailsModalProps> = ({ item, isOpen, onClose, auto
           ) : (
             <>
               <img
-                src={currentItem?.local_backdrop_path || getImageUrl(currentItem?.backdrop_path || null, 'original') || '/placeholder-backdrop.png'}
+                src={currentItem?.local_backdrop_path || getImageUrl(currentItem?.backdrop_path || null, 'original') || PLACEHOLDER_BACKDROP}
                 alt={currentItem?.title || currentItem?.name}
                 className="w-full h-full object-cover transform hover:scale-105 transition-transform duration-[2000ms] ease-out"
                 onError={(e) => {
                   const target = e.target as HTMLImageElement;
-                  target.src = '/placeholder-backdrop.png';
+                  target.src = PLACEHOLDER_BACKDROP;
                 }}
               />
               <div className="absolute inset-0 bg-gradient-to-t from-[#111] via-[#111]/60 to-transparent" />
@@ -595,7 +791,7 @@ const DetailsModal: React.FC<DetailsModalProps> = ({ item, isOpen, onClose, auto
               {/* Overlay Action */}
               <div className="absolute inset-0 flex items-center justify-center">
                 <button
-                  onClick={() => setShowTrailer(true)}
+                  onClick={handlePlayTrailer}
                   className="group relative flex items-center justify-center"
                 >
                   <div className="absolute inset-0 bg-red-600 rounded-full blur-2xl opacity-0 group-hover:opacity-40 transition-opacity duration-500" />
@@ -614,9 +810,16 @@ const DetailsModal: React.FC<DetailsModalProps> = ({ item, isOpen, onClose, auto
             <div className="absolute bottom-10 left-10 right-10 z-10">
               <h1 className="text-4xl md:text-6xl font-black text-white mb-6 drop-shadow-2xl">{displayTitle}</h1>
               <div className="flex items-center gap-4">
-                {onPlay && currentItem && (!isTV || currentItem.local_path) && (
-                  <button onClick={() => onPlay(currentItem)} className="flex items-center gap-3 px-10 py-3 bg-white text-black rounded-lg hover:bg-zinc-200 transition-all font-bold text-xl active:scale-95"><Play fill="black" /> Play</button>
-                )}
+                {onPlay && currentItem && !isTV && !hideMainPlay && (
+                  <button onClick={async () => {
+                    try {
+                      await onPlay?.(currentItem as TMDBResult);
+                    } catch (err: any) {
+                      console.error('Play handler threw an error:', err);
+                      setPlaybackError(err?.message || 'Failed to start playback.');
+                    }
+                  }} className="flex items-center gap-3 px-10 py-3 bg-white text-black rounded-lg hover:bg-zinc-200 transition-all font-bold text-xl active:scale-95"><Play fill="black" /> Play</button>
+                )} 
                 <button
                   onClick={handleToggleMyList}
                   className="group p-2.5 bg-black/40 hover:bg-black/60 border border-white/30 rounded-full text-white transition-all ring-offset-black hover:ring-2 hover:ring-white"
@@ -657,12 +860,17 @@ const DetailsModal: React.FC<DetailsModalProps> = ({ item, isOpen, onClose, auto
                 <span className="text-sm font-bold">Back</span>
               </button>
             )}
-            <button
-              onClick={onClose}
-              className="p-2 bg-[#141414]/80 hover:bg-[#141414] rounded-full text-white transition-all border border-white/10"
-            >
-              <X className="h-6 w-6" />
-            </button>
+
+            {/* Hide main close while trailer is playing to avoid accidental close */}
+            {!showTrailer && (
+              <button
+                onClick={onClose}
+                className="p-2 bg-[#141414]/80 hover:bg-[#141414] rounded-full text-white transition-all border border-white/10"
+                aria-label="Close"
+              >
+                <X className="h-6 w-6" />
+              </button>
+            )}
           </div>
         </div>
 
@@ -773,7 +981,7 @@ const DetailsModal: React.FC<DetailsModalProps> = ({ item, isOpen, onClose, auto
                 </div>
 
                 {/* TV Episodes within Overview Tab */}
-                {isTV && (episodes.length > 0 || loadingEpisodes) && (
+                {isTV && (loadingEpisodes || episodes.length > 0 || attemptedEpisodeFetch) && (
                   <div className="pt-12 border-t border-white/10">
                     <div className="flex items-center justify-between mb-8">
                       <h2 className="text-3xl font-black text-white uppercase tracking-wider">Episodes</h2>
@@ -784,10 +992,10 @@ const DetailsModal: React.FC<DetailsModalProps> = ({ item, isOpen, onClose, auto
 
                     {loadingEpisodes ? (
                       <div className="flex justify-center p-12"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-red-600"></div></div>
-                    ) : (
+                    ) : episodes.length > 0 ? (
                       <div className="space-y-4">
                         {episodes.filter(ep => ep.season === selectedSeason).sort((a, b) => a.episode - b.episode).map((ep) => (
-                          <div key={`${ep.season}-${ep.episode}`} className="group flex gap-8 p-6 rounded-2xl hover:bg-white/5 transition-all cursor-pointer border border-transparent hover:border-white/10" onClick={() => onPlayEpisode?.(ep)}>
+                          <div key={`${ep.season}-${ep.episode}`} className="group flex gap-8 p-6 rounded-2xl hover:bg-white/5 transition-all cursor-pointer border border-transparent hover:border-white/10" onClick={async () => { try { await onPlayEpisode?.(ep); } catch (err: any) { console.error('Episode play failed', err); setPlaybackError(err?.message || 'Failed to play episode'); } }}>
                             <div className="flex items-center gap-6 flex-shrink-0">
                               <span className="text-2xl font-black text-zinc-600 w-8">{ep.episode}</span>
                               <div className="relative w-40 h-24 rounded-xl overflow-hidden bg-gray-800 flex-shrink-0">
@@ -839,9 +1047,12 @@ const DetailsModal: React.FC<DetailsModalProps> = ({ item, isOpen, onClose, auto
                           </div>
                         ))}
                       </div>
+                    ) : (
+                      <div className="py-12 text-center text-gray-400">No episodes found for this show.</div>
                     )}
                   </div>
                 )}
+
               </div>
             )}
 

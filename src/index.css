@@ -44,8 +44,10 @@
   }
 
   html {
+    height: 100%;
     scrollbar-width: thin;
     scrollbar-color: #e50914 #141414;
+    background-color: #050505; /* Ensure no white gap at document root */
   }
   html::-webkit-scrollbar {
     width: 10px;
@@ -60,6 +62,11 @@
   }
   html::-webkit-scrollbar-thumb:hover {
     background: #f40612;
+  }
+
+  body, #root {
+    min-height: 100%;
+    background-color: #050505; /* Match app background to avoid white patches */
   }
 }
 
@@ -112,5 +119,24 @@
   }
   .scrollbar-netflix::-webkit-scrollbar-thumb:hover {
     background: #f40612;
+  }
+
+  /* VLC Status Display Slider Styling */
+  .vlc-slider::-webkit-slider-thumb {
+    appearance: none;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #3b82f6;
+    cursor: pointer;
+  }
+  
+  .vlc-slider::-moz-range-thumb {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #3b82f6;
+    cursor: pointer;
+    border: none;
   }
 }

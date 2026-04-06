@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Referrer-Policy" content="strict-origin-when-cross-origin" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Trailer Player</title>
+  <style>
+    html,body{height:100%;margin:0;background:#000}
+    #player{width:100%;height:100%;display:flex;align-items:center;justify-content:center}
+    iframe{width:100%;height:100%;border:0}
+    .error{color:#fff;text-align:center;padding:20px}
+  </style>
+</head>
+<body>
+  <div id="player">
+    <div id="content"></div>
+  </div>
+
+  <script>
+    // Read query param 'key' for YouTube video key and optional 'title'
+    const params = new URLSearchParams(window.location.search);
+    const key = params.get('key');
+    const title = params.get('title') || 'Trailer';
+
+    function openExternalWatch() {
+      const watchUrl = `https://www.youtube.com/watch?v=${encodeURIComponent(key)}`;
+      // Ask the main process to open externally if available
+      if (window.electronAPI?.openExternal) {
+        window.electronAPI.openExternal(watchUrl);
+      } else {
+        window.open(watchUrl, '_blank');
+      }
+    }
+
+    function showError(msg) {
+      const el = document.getElementById('content');
+      el.innerHTML = `<div class="error">${msg}<br><button id="open">Open on YouTube</button></div>`;
+      document.getElementById('open').addEventListener('click', openExternalWatch);
+    }
+
+    if (!key) {
+      showError('No trailer key provided');
+    } else {
+      // Prefer youtube-nocookie embed first (privacy) and set strict referrer policy via attribute
+      const container = document.getElementById('content');
+      const iframe = document.createElement('iframe');
+      iframe.setAttribute('allow', 'autoplay; fullscreen; encrypted-media');
+      iframe.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
+      iframe.setAttribute('title', title);
+      iframe.src = `https://www.youtube-nocookie.com/embed/${encodeURIComponent(key)}?rel=0&modestbranding=1&autoplay=1`;
+
+      // Basic error handling: if the embed fails (rare), fall back to the main youtube watch page
+      iframe.addEventListener('error', () => {
+        console.warn('Iframe embed error, falling back to youtube watch page');
+        openExternalWatch();
+      });
+
+      // Also listen for messages from iframe (YouTube IFrame API) if more advanced handling needed later
+      container.appendChild(iframe);
+
+      // Add a small timeout to detect blocked embeds (e.g., 153 error often ends up as blank frame)
+      setTimeout(() => {
+        const rect = iframe.getBoundingClientRect();
+        // If iframe has zero height or is blank (heuristic) we will open external watch as fallback
+        // Note: This is a heuristic — YouTube sometimes delays content; keep timeout reasonable
+        if (rect.width === 0 || rect.height === 0) {
+          console.warn('Iframe appears empty, falling back to external watch page');
+          openExternalWatch();
+        }
+      }, 2500);
+    }
+  </script>
+</body>
+</html>

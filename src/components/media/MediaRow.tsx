@@ -9,9 +9,10 @@ interface MediaRowProps {
   onCardClick: (item: TMDBResult) => void;
   onPlay?: (item: TMDBResult) => void;
   aspect?: 'poster' | 'backdrop';
+  disableEpisodePlay?: boolean; // when true, hovering Play on episode items does nothing
 }
 
-const MediaRow: React.FC<MediaRowProps> = ({ title, items, onCardClick, onPlay, aspect = 'poster' }) => {
+const MediaRow: React.FC<MediaRowProps> = ({ title, items, onCardClick, onPlay, aspect = 'poster', disableEpisodePlay }) => {
   const rowRef = useRef<HTMLDivElement>(null);
   const [showLeftArrow, setShowLeftArrow] = useState(false);
   const [showRightArrow, setShowRightArrow] = useState(false);
@@ -84,7 +85,13 @@ const MediaRow: React.FC<MediaRowProps> = ({ title, items, onCardClick, onPlay, 
               key={item.id}
               item={item}
               onClick={() => onCardClick(item)}
-              onPlay={onPlay}
+              onPlay={(it) => {
+                // If disabled and this looks like an episode, do nothing
+                if (typeof (it as any).episode !== 'undefined' && (it as any).episode !== null && (typeof (it as any).episode === 'number')) {
+                  if (disableEpisodePlay) return;
+                }
+                onPlay?.(it);
+              }}
               aspect={aspect}
               className={`flex-shrink-0 ${aspect === 'backdrop' ? 'w-64 md:w-80 lg:w-96' : 'w-44 md:w-52 lg:w-60'}`}
             />

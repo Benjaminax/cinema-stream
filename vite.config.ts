@@ -13,6 +13,7 @@ export default defineConfig({
         vite: {
           build: {
             rollupOptions: {
+              external: ['express'],
               output: {
                 format: 'cjs'
               }
