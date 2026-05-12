@@ -105,13 +105,13 @@ cinema/
 ## Screenshots
 
 <p align="center">
-  <img src="src/screenshots/Screenshot%202026-05-12%20201419.png" alt="Home" width="600" />
+  <img src="./src/screenshots/Screenshot%202026-05-12%20201419.png" alt="Home" width="600" />
   <br/>
-  <img src="src/screenshots/Screenshot%202026-05-12%20201428.png" alt="Details Modal" width="600" />
+  <img src="./src/screenshots/Screenshot%202026-05-12%20201428.png" alt="Details Modal" width="600" />
   <br/>
-  <img src="src/screenshots/Screenshot%202026-05-12%20201439.png" alt="Player" width="600" />
+  <img src="./src/screenshots/Screenshot%202026-05-12%20201439.png" alt="Player" width="600" />
   <br/>
-  <img src="src/screenshots/Screenshot%202026-05-12%20201500.png" alt="Library" width="600" />
+  <img src="./src/screenshots/Screenshot%202026-05-12%20201500.png" alt="Library" width="600" />
 </p>
 
 ## Socials
