@@ -88,12 +88,15 @@ class MediaPlayerManager {
 
       // Kill existing VLC process if running
       if (this.vlcProcess) {
+        console.log('🎮 Terminating previous VLC process...');
         this.stopTracking();
         try {
-          this.vlcProcess.kill();
+          // Force termination
+          this.vlcProcess.kill('SIGKILL'); 
         } catch (e) {
           console.log('Previous VLC process already terminated');
         }
+        this.vlcProcess = null;
       }
 
       console.log(`🎮 Starting VLC with HTTP interface on port ${this.httpPort}`);
@@ -180,6 +183,8 @@ class MediaPlayerManager {
     
     console.log('🔄 Starting VLC playback tracking');
     this.isTracking = true;
+    let lastKnownPosition = 0;
+    let trackingStartTime = Date.now();
     
     this.trackingInterval = setInterval(async () => {
       try {
@@ -188,6 +193,16 @@ class MediaPlayerManager {
           const currentTime = status.time || 0;
           const totalLength = status.length || 0;
           const state = status.state || 'unknown';
+          const position = status.position || 0;
+
+          // Only trust position if we've been tracking for a bit or if time is significant
+          // This prevents junk data from VLC at start/resumes from triggering 'completed'
+          const timeSinceStart = (Date.now() - trackingStartTime) / 1000;
+          const isPositionTrustworthy = timeSinceStart > 5 || currentTime > 10;
+
+          if (position > 0) {
+             lastKnownPosition = position;
+          }
 
           // Send progress update to renderer
           if (win && currentTime >= 0 && totalLength > 0) {
@@ -196,22 +211,39 @@ class MediaPlayerManager {
               time: currentTime,
               length: totalLength,
               state: state,
-              position: status.position || 0
+              position: position
             });
           }
 
-          // If playback has ended, stop tracking
-          if (state === 'stopped' || (totalLength > 0 && currentTime >= totalLength * 0.99)) {
-            console.log('🎬 Playback completed, stopping tracking');
+          // Advanced completion detection
+          // Require position > 98% AND trustworthy timing
+          const isNearEnd = isPositionTrustworthy && (lastKnownPosition > 0.98 || (totalLength > 0 && currentTime >= totalLength * 0.99));
+          
+          if (state === 'stopped' || isNearEnd) {
+            console.log(`🎬 Playback state: ${state}, Position: ${lastKnownPosition.toFixed(4)}. Completion detected: ${isNearEnd} (Trustworthy: ${isPositionTrustworthy})`);
+            
+            if (win) {
+              win.webContents.send('playback-ended', {
+                path: this.currentMediaPath,
+                reason: isNearEnd ? 'completed' : 'stopped',
+                position: lastKnownPosition
+              });
+            }
             this.stopTracking();
           }
         }
       } catch (error) {
         // If we can't connect to VLC HTTP interface, it might have closed
         console.log('VLC HTTP interface not available, stopping tracking');
+        if (win && this.currentMediaPath) {
+          win.webContents.send('playback-ended', {
+            path: this.currentMediaPath,
+            reason: 'disconnected'
+          });
+        }
         this.stopTracking();
       }
-    }, 2000); // Update every 2 seconds
+    }, 1500); // Polling slightly faster for better precision
   }
 
   private stopTracking(): void {
@@ -648,6 +680,39 @@ ipcMain.handle('open-trailer-window', async (event, { url, title }: { url: strin
     trailerWindow.setMenu(null);
   } catch (error) {
     console.error('🎬 Main process: Error opening trailer window:', error);
+  }
+});
+
+ipcMain.handle('open-yflix-window', async (event, { url, title }: { url: string; title: string }) => {
+  console.log('🌐 Main process: Opening YFlix browser:', url);
+  try {
+    const yflixWindow = new BrowserWindow({
+      width: 1400,
+      height: 900,
+      title: title || 'YFlix Browser',
+      autoHideMenuBar: true,
+      backgroundColor: '#000000',
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        webSecurity: true,
+        // Using a distinct partition for YFlix to isolate storage and cookies
+        partition: 'persist:yflix',
+      },
+    });
+
+    // Modern Chrome User-Agent highly compatible with streaming sites
+    yflixWindow.webContents.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
+
+    yflixWindow.loadURL(url);
+    yflixWindow.setMenu(null);
+
+    // Optional: show a loading indicator or handle errors
+    yflixWindow.webContents.on('did-fail-load', (e, code, desc) => {
+      console.warn(`🌐 YFlix load failed: ${desc} (${code})`);
+    });
+  } catch (error) {
+    console.error('🌐 Main process: Error opening YFlix window:', error);
   }
 });
 

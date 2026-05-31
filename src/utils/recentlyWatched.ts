@@ -129,7 +129,7 @@ export const updateRecentlyWatchedProgress = (path: string, progress: number, du
       const updated = [item, ...filtered];
 
       localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-      try { window.dispatchEvent(new CustomEvent('recently-watched-updated')); } catch (e) { }
+      try { window.dispatchEvent(new CustomEvent('recently-watched-updated')); } catch (e) { /* event dispatch failed */ }
     }
   } catch (err) {
     console.error('Error updating progress:', err);

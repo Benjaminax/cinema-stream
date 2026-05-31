@@ -231,7 +231,9 @@ const Popular: React.FC = () => {
         ? ((item as any).seriesTitle || selectedMedia?.name || selectedMedia?.title || item.title || '')
         : ((item as TMDBResult).title || (item as TMDBResult).name || '');
       const searchUrl = `https://yflix.to/browser?keyword=${title.trim().replace(/\s+/g, '+')}`;
-      if (window.electronAPI?.openExternal) {
+      if (window.electronAPI?.openYFlixWindow) {
+        window.electronAPI.openYFlixWindow(searchUrl, title);
+      } else if (window.electronAPI?.openExternal) {
         window.electronAPI.openExternal(searchUrl);
       } else {
         window.open(searchUrl, '_blank');

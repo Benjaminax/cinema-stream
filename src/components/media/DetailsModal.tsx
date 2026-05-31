@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Tv, Play, BookmarkPlus, Check, Youtube, Maximize2, ArrowLeft, Star, Heart } from 'lucide-react';
+import { X, Tv, Play, BookmarkPlus, Check, Youtube, Maximize2, ArrowLeft, Star, Heart, RefreshCw } from 'lucide-react';
 import { useNetworkStatus } from '../../hooks/useNetworkStatus';
 import { TMDBResult, MediaDetails, Video } from '../../types/media';
 import { getImageUrl, getDetails, getVideos, getIMDbRating, getEpisodeDetails, getSeasonDetails, getSimilar, searchByGenre } from '../../api/tmdb';
@@ -7,6 +7,7 @@ import { libraryCache } from '../../utils/libraryCache';
 import { addToMyList, removeFromMyList, isInMyList as checkIsInMyList } from '../../utils/myList';
 import { getRecentlyWatched, normalizePath } from '../../utils/recentlyWatched';
 import { getTopGenrePreferences, getPreferredGenreIds } from '../../utils/genrePreferences';
+import { getNextEpisode } from '../../utils/mediaPlayback';
 
 const PLACEHOLDER_BACKDROP = new URL('/placeholder-backdrop.png', import.meta.url).href;
 
@@ -60,8 +61,26 @@ const DetailsModal: React.FC<DetailsModalProps> = ({ item, isOpen, onClose, auto
   const [shouldAutoPlayNext, setShouldAutoPlayNext] = useState(false);
   const [activeTab, setActiveTab] = useState<'overview' | 'more-like-this'>('overview');
   const [loadingImdb, setLoadingImdb] = useState(false);
+  const [currentPlayingEpisode, setCurrentPlayingEpisode] = useState<Episode | null>(null);
+  const [nextEpisode, setNextEpisode] = useState<Episode | null>(null);
+  const [autoplayEnabled, setAutoplayEnabled] = useState(() => {
+    try {
+      const saved = localStorage.getItem('cinestream_autoplay_enabled');
+      return saved !== null ? JSON.parse(saved) : true;
+    } catch (e) {
+      return true;
+    }
+  });
+  const [countdown, setCountdown] = useState<number | null>(null);
+  const countdownIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const isTV = currentItem?.media_type === 'tv' || !!currentItem?.first_air_date;
 
   const modalContentRef = useRef<HTMLDivElement>(null);
+  const episodesRef = useRef<Episode[]>([]);
+  const currentPlayingEpisodeRef = useRef<Episode | null>(null);
+  const nextEpisodeRef = useRef<Episode | null>(null);
+  const lastTriggerTime = useRef<number>(0);
   // Used for either the iframe OR the Electron <webview> element
   const trailerIframeRef = useRef<HTMLElement | null>(null);
 
@@ -546,6 +565,110 @@ const DetailsModal: React.FC<DetailsModalProps> = ({ item, isOpen, onClose, auto
     }
   }, [isOpen, item]);
 
+  // Update refs when state changes
+  useEffect(() => {
+    episodesRef.current = episodes;
+  }, [episodes]);
+
+  useEffect(() => {
+    currentPlayingEpisodeRef.current = currentPlayingEpisode;
+    
+    // Calculate next episode for ref
+    if (currentPlayingEpisode && episodes.length > 0) {
+      const sorted = [...episodes].sort((a, b) => 
+        a.season !== b.season ? a.season - b.season : a.episode - b.episode
+      );
+      const idx = sorted.findIndex(ep => ep.season === currentPlayingEpisode.season && ep.episode === currentPlayingEpisode.episode);
+      if (idx !== -1 && idx < sorted.length - 1) {
+        nextEpisodeRef.current = sorted[idx + 1];
+        setNextEpisode(sorted[idx + 1]);
+      } else {
+        nextEpisodeRef.current = null;
+        setNextEpisode(null);
+      }
+    } else {
+      nextEpisodeRef.current = null;
+      setNextEpisode(null);
+    }
+  }, [currentPlayingEpisode, episodes]);
+
+  // Handle Countdown completion
+  useEffect(() => {
+    if (countdown === 0 && nextEpisode) {
+      if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+      handleEpisodePlay(nextEpisode);
+      setCountdown(null);
+    }
+  }, [countdown, nextEpisode]);
+
+  // Listen for playback-ended to trigger autoplay
+  useEffect(() => {
+    if (!(window as any).electronAPI) return;
+
+    const handleEnded = (_: any, data: any) => {
+      console.log('🎬 Renderer: Playback ended:', data);
+      
+      const isAutoplayOn = () => {
+        try {
+          const saved = localStorage.getItem('cinestream_autoplay_enabled');
+          return saved !== null ? JSON.parse(saved) : true;
+        } catch (e) { return true; }
+      };
+
+      if (!isAutoplayOn()) return;
+      
+      // Prevent double triggers
+      const now = Date.now();
+      if (lastTriggerTime.current && (now - lastTriggerTime.current < 2500)) return;
+
+      const curEp = currentPlayingEpisodeRef.current;
+      const allEps = episodesRef.current;
+      
+      if (curEp && allEps.length > 0 && data.reason === 'completed') {
+        const nextEp = getNextEpisode(curEp, allEps);
+        
+        if (nextEp) {
+          console.log('🎬 Next episode found:', nextEp.title);
+          lastTriggerTime.current = now;
+          setNextEpisode(nextEp);
+          
+          setCountdown(5);
+          if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+          
+          countdownIntervalRef.current = setInterval(() => {
+            setCountdown(prev => (prev !== null && prev > 0) ? prev - 1 : prev);
+          }, 1000);
+        }
+      }
+    };
+
+    (window as any).electronAPI.on('playback-ended', handleEnded);
+    return () => {
+      (window as any).electronAPI.removeListener('playback-ended', handleEnded);
+      if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+    };
+  }, [onPlayEpisode]);
+
+  // Sync currentPlayingEpisode with recently watched when modal opens
+  useEffect(() => {
+    if (isOpen && isTV && episodes.length > 0 && !currentPlayingEpisode) {
+      const rw = getRecentlyWatched();
+      // Look for the most recent episode from this specific series
+      const seriesEp = rw.find(item => 
+        item.type === 'episode' && 
+        episodes.some(ep => normalizePath(ep.path) === normalizePath(item.path))
+      );
+      
+      if (seriesEp) {
+        const matchingEp = episodes.find(ep => normalizePath(ep.path) === normalizePath(seriesEp.path));
+        if (matchingEp) {
+          console.log('🎬 Syncing currentPlayingEpisode from history:', matchingEp.title);
+          setCurrentPlayingEpisode(matchingEp);
+        }
+      }
+    }
+  }, [isOpen, isTV, episodes.length, currentPlayingEpisode, normalizePath]);
+
   const handleItemClick = (media: TMDBResult, autoPlay: boolean = false) => {
     if (currentItem) setHistory(prev => [...prev, currentItem]);
     if (autoPlay) setShouldAutoPlayNext(true);
@@ -567,7 +690,19 @@ const DetailsModal: React.FC<DetailsModalProps> = ({ item, isOpen, onClose, auto
   if (!isOpen || !currentItem) return null;
 
   const displayTitle = currentItem.name || currentItem.title || 'Unknown Title';
-  const isTV = currentItem.media_type === 'tv' || !!currentItem.first_air_date;
+
+  const handleEpisodePlay = async (ep: Episode) => {
+    try {
+      const now = Date.now();
+      lastTriggerTime.current = now; // Mark manual trigger too
+      setCurrentPlayingEpisode(ep);
+      await onPlayEpisode?.(ep);
+    } catch (err: any) {
+      console.error('Episode play failed', err);
+      setPlaybackError(err?.message || 'Failed to play episode');
+    }
+  };
+
   const releaseDate = currentItem.release_date || currentItem.first_air_date;
   const year = releaseDate ? new Date(releaseDate).getFullYear() : null;
 
@@ -664,6 +799,59 @@ const DetailsModal: React.FC<DetailsModalProps> = ({ item, isOpen, onClose, auto
         {/* Hero Section */}
         <div className={`relative transition-all duration-700 ease-in-out bg-black overflow-hidden flex-shrink-0 ${isTheaterMode ? 'h-full z-50' : 'aspect-video'
           }`}>
+          {/* Autoplay Next Episode Countdown Overlay */}
+          {countdown !== null && nextEpisode && (
+            <div className="absolute inset-0 z-[100] bg-black/90 backdrop-blur-xl flex flex-col items-center justify-center p-8 animate-in fade-in duration-500">
+              <div className="text-red-600 font-black tracking-widest uppercase text-sm mb-4">Up Next in {countdown}s</div>
+              <div className="relative w-64 aspect-video rounded-2xl overflow-hidden mb-6 shadow-2xl border border-white/10">
+                <img 
+                  src={nextEpisode.local_still_path || getImageUrl(nextEpisode.still_path || null, 'w500')} 
+                  className="w-full h-full object-cover opacity-60" 
+                  alt="" 
+                />
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <button 
+                    onClick={() => { 
+                      if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current); 
+                      handleEpisodePlay(nextEpisode); 
+                      setCountdown(null); 
+                    }} 
+                    className="p-4 bg-white text-black rounded-full hover:scale-110 transition-transform"
+                  >
+                    <Play fill="black" size={32} className="translate-x-0.5" />
+                  </button>
+                </div>
+              </div>
+              <h3 className="text-3xl font-black text-white text-center mb-2">{nextEpisode?.title || 'Next Episode'}</h3>
+              <p className="text-zinc-400 font-bold mb-8 italic">
+                {nextEpisode?.season !== undefined ? `S${nextEpisode.season}` : ''} 
+                {nextEpisode?.episode !== undefined ? ` E${nextEpisode.episode}` : ''}
+              </p>
+              <div className="flex gap-4">
+                <button 
+                  onClick={() => setCountdown(null)} 
+                  className="px-8 py-3 bg-white/10 hover:bg-white/20 text-white rounded-xl font-bold transition-all"
+                >
+                  Cancel
+                </button>
+                <button 
+                  onClick={() => { 
+                    try {
+                      if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current); 
+                      handleEpisodePlay(nextEpisode); 
+                      setCountdown(null); 
+                    } catch (e) {
+                      console.error('Failed to play next episode:', e);
+                      setCountdown(null);
+                    }
+                  }} 
+                  className="px-8 py-3 bg-red-600 hover:bg-red-700 text-white rounded-xl font-bold transition-all"
+                >
+                  Play Now
+                </button>
+              </div>
+            </div>
+          )}
           {showTrailer && trailer ? (
             <div className="absolute inset-0 z-10 bg-black flex items-center justify-center">
               {((window as any).electronAPI && trailerPreloadPath) ? (
@@ -820,6 +1008,16 @@ const DetailsModal: React.FC<DetailsModalProps> = ({ item, isOpen, onClose, auto
                     }
                   }} className="flex items-center gap-3 px-10 py-3 bg-white text-black rounded-lg hover:bg-zinc-200 transition-all font-bold text-xl active:scale-95"><Play fill="black" /> Play</button>
                 )} 
+
+                {isTV && currentPlayingEpisode && nextEpisode && (
+                  <button 
+                    onClick={() => handleEpisodePlay(nextEpisode)}
+                    className="flex items-center gap-2 px-6 py-3 bg-white/10 hover:bg-white/20 text-white rounded-lg transition-all font-bold text-lg active:scale-95 border border-white/20"
+                    title={`Up Next: ${nextEpisode.title}`}
+                  >
+                    <span className="text-sm font-black uppercase tracking-wider">Next</span>
+                  </button>
+                )}
                 <button
                   onClick={handleToggleMyList}
                   className="group p-2.5 bg-black/40 hover:bg-black/60 border border-white/30 rounded-full text-white transition-all ring-offset-black hover:ring-2 hover:ring-white"
@@ -985,9 +1183,20 @@ const DetailsModal: React.FC<DetailsModalProps> = ({ item, isOpen, onClose, auto
                   <div className="pt-12 border-t border-white/10">
                     <div className="flex items-center justify-between mb-8">
                       <h2 className="text-3xl font-black text-white uppercase tracking-wider">Episodes</h2>
-                      <select value={selectedSeason ?? ''} onChange={(e) => setSelectedSeason(Number(e.target.value))} className="bg-[#222] border border-white/10 text-white rounded-xl px-5 py-2.5 outline-none font-bold text-sm focus:ring-2 focus:ring-red-600">
-                        {Array.from(new Set(episodes.map(ep => ep.season))).sort((a, b) => a - b).map(s => <option key={s} value={s}>Season {s}</option>)}
-                      </select>
+                      <div className="flex items-center gap-6">
+                        <div className="flex items-center gap-2 mr-2">
+                          <span className="text-[10px] uppercase tracking-widest text-zinc-500 font-black">Autoplay</span>
+                          <button 
+                            onClick={() => setAutoplayEnabled(!autoplayEnabled)}
+                            className={`relative w-10 h-5 rounded-full transition-all duration-300 ${autoplayEnabled ? 'bg-red-600' : 'bg-zinc-700'}`}
+                          >
+                            <div className={`absolute top-1 w-3 h-3 bg-white rounded-full transition-all duration-300 shadow-sm ${autoplayEnabled ? 'left-6' : 'left-1'}`} />
+                          </button>
+                        </div>
+                        <select value={selectedSeason ?? ''} onChange={(e) => setSelectedSeason(Number(e.target.value))} className="bg-[#222] border border-white/10 text-white rounded-xl px-5 py-2.5 outline-none font-bold text-sm focus:ring-2 focus:ring-red-600">
+                          {Array.from(new Set(episodes.map(ep => ep.season))).sort((a, b) => a - b).map(s => <option key={s} value={s}>Season {s}</option>)}
+                        </select>
+                      </div>
                     </div>
 
                     {loadingEpisodes ? (
@@ -995,7 +1204,15 @@ const DetailsModal: React.FC<DetailsModalProps> = ({ item, isOpen, onClose, auto
                     ) : episodes.length > 0 ? (
                       <div className="space-y-4">
                         {episodes.filter(ep => ep.season === selectedSeason).sort((a, b) => a.episode - b.episode).map((ep) => (
-                          <div key={`${ep.season}-${ep.episode}`} className="group flex gap-8 p-6 rounded-2xl hover:bg-white/5 transition-all cursor-pointer border border-transparent hover:border-white/10" onClick={async () => { try { await onPlayEpisode?.(ep); } catch (err: any) { console.error('Episode play failed', err); setPlaybackError(err?.message || 'Failed to play episode'); } }}>
+                          <div 
+                            key={`${ep.season}-${ep.episode}`} 
+                            className={`group flex gap-8 p-6 rounded-2xl transition-all cursor-pointer border ${
+                              currentPlayingEpisode?.path === ep.path 
+                                ? 'bg-red-600/10 border-red-600/40' 
+                                : 'hover:bg-white/5 border-transparent hover:border-white/10'
+                            }`} 
+                            onClick={() => handleEpisodePlay(ep)}
+                          >
                             <div className="flex items-center gap-6 flex-shrink-0">
                               <span className="text-2xl font-black text-zinc-600 w-8">{ep.episode}</span>
                               <div className="relative w-40 h-24 rounded-xl overflow-hidden bg-gray-800 flex-shrink-0">

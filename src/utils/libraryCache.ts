@@ -118,7 +118,7 @@ class LibraryCache {
     async updateMetadata(id: number, type: 'movie' | 'series', metadata: Partial<TMDBResult>) {
         // Find by ID since path might not be available or consistent
         const list = type === 'movie' ? this.data.movies : this.data.series;
-        const entry = Object.entries(list).find(([_, item]) => item.id === id);
+        const entry = Object.entries(list).find(([, item]) => item.id === id);
 
         if (entry) {
             const [path, item] = entry;

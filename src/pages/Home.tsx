@@ -565,7 +565,9 @@ const Home: React.FC<{ isActive?: boolean }> = ({ isActive = true }) => {
     if ('season' in item && 'episode' in item) {
       const seriesTitle = (item as any).seriesTitle || selectedItem?.name || selectedItem?.title || (item as any).title || '';
       const searchUrl = `https://yflix.to/browser?keyword=${seriesTitle.trim().replace(/\s+/g, '+')}`;
-      if (window.electronAPI?.openExternal) {
+      if (window.electronAPI?.openYFlixWindow) {
+        window.electronAPI.openYFlixWindow(searchUrl, seriesTitle);
+      } else if (window.electronAPI?.openExternal) {
         window.electronAPI.openExternal(searchUrl);
       } else {
         window.open(searchUrl, '_blank');
@@ -610,7 +612,9 @@ const Home: React.FC<{ isActive?: boolean }> = ({ isActive = true }) => {
     // For TMDB items without local files, search on yflix
     const title = tmdbItem.title || tmdbItem.name || '';
     const searchUrl = `https://yflix.to/browser?keyword=${title.trim().replace(/\s+/g, '+')}`;
-    if (window.electronAPI?.openExternal) {
+    if (window.electronAPI?.openYFlixWindow) {
+      window.electronAPI.openYFlixWindow(searchUrl, title);
+    } else if (window.electronAPI?.openExternal) {
       window.electronAPI.openExternal(searchUrl);
     } else {
       window.open(searchUrl, '_blank');

@@ -113,18 +113,18 @@ export const waitForVLCPlayback = (timeoutMs: number = 10000): Promise<boolean> 
       if (!resolved && event.detail?.state === 'playing') {
         resolved = true;
         resolve(true);
-        window.removeEventListener('vlc-playback-progress', handleProgress as EventListener);
+        window.removeEventListener('vlc-playback-progress', handleProgress as any);
       }
     };
     
-    window.addEventListener('vlc-playback-progress', handleProgress as EventListener);
+    window.addEventListener('vlc-playback-progress', handleProgress as any);
     
     // Timeout fallback
     setTimeout(() => {
       if (!resolved) {
         resolved = true;
         resolve(false);
-        window.removeEventListener('vlc-playback-progress', handleProgress as EventListener);
+        window.removeEventListener('vlc-playback-progress', handleProgress as any);
       }
     }, timeoutMs);
   });
@@ -182,6 +182,40 @@ export class MediaSession {
     return this.isPlaying ? Date.now() - this.startTime : 0;
   }
 }
+
+/**
+ * Get the next episode in the series sequence
+ * Handles intra-season (E1 -> E2) and inter-season transitions (S1E8 -> S2E1)
+ */
+export const getNextEpisode = (
+  current: { season?: number; episode?: number },
+  allEpisodes: Array<{ season?: number; episode?: number }>
+): any | null => {
+  if (!current.season || !current.episode || !allEpisodes || allEpisodes.length === 0) {
+    return null;
+  }
+
+  // Sort episodes by season then episode number
+  const sorted = [...allEpisodes].sort((a, b) => {
+    if (a.season !== b.season) {
+      return (a.season || 0) - (b.season || 0);
+    }
+    return (a.episode || 0) - (b.episode || 0);
+  });
+
+  // Find the index of the current episode
+  const currentIndex = sorted.findIndex(
+    ep => ep.season === current.season && ep.episode === current.episode
+  );
+
+  // If not found or it's the last episode
+  if (currentIndex === -1 || currentIndex === sorted.length - 1) {
+    return null;
+  }
+
+  // Return the next episode in the sorted list
+  return sorted[currentIndex + 1];
+};
 
 // Export singleton instance
 export const mediaSession = MediaSession.getInstance();

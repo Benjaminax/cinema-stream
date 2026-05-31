@@ -10,8 +10,8 @@ const RecentlyWatched: React.FC = () => {
 
   useEffect(() => {
     const handler = () => setItems(getRecentlyWatched());
-    window.addEventListener('recently-watched-updated', handler as EventListener);
-    return () => window.removeEventListener('recently-watched-updated', handler as EventListener);
+    window.addEventListener('recently-watched-updated', handler as any);
+    return () => window.removeEventListener('recently-watched-updated', handler as any);
   }, []);
 
 

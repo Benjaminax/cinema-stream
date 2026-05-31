@@ -6,6 +6,7 @@ const api = {
   openFile: (filePath: string, startTime?: number) => ipcRenderer.invoke('open-file', filePath, startTime),
   openExternal: (url: string) => ipcRenderer.invoke('open-external', url),
   openTrailerWindow: (url: string, title: string) => ipcRenderer.invoke('open-trailer-window', { url, title }),
+  openYFlixWindow: (url: string, title: string) => ipcRenderer.invoke('open-yflix-window', { url, title }),
   playMediaVLC: (options: { filePath: string; startTime?: number; fullscreen?: boolean }) => ipcRenderer.invoke('play-media-vlc', options),
   getVLCStatus: () => ipcRenderer.invoke('get-vlc-status'),
   sendVLCCommand: (command: string, value?: string) => ipcRenderer.invoke('send-vlc-command', { command, value }),
