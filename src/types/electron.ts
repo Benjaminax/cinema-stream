@@ -20,6 +20,7 @@
     downloadImage: (url: string, fileName: string, options?: { overwrite?: boolean }) => Promise<string | null>;
     openExternal: (url: string) => Promise<void>;
     openTrailerWindow: (options: { url: string; title: string }) => Promise<void>;
+    openYFlixWindow: (url: string, title: string) => Promise<void>;
     getTrailerPreloadPath: () => Promise<string>;
     getFileStats: (filePath: string) => Promise<{ mtimeMs?: number; birthtimeMs?: number; size?: number }>;
     computeFileHash: (filePath: string, options?: { mode?: 'quick' | 'full' }) => Promise<{ hash: string | null; method?: string; error?: string }>;

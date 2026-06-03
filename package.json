@@ -38,7 +38,7 @@
     "@vitejs/plugin-react": "^4.0.3",
     "autoprefixer": "^10.4.14",
     "concurrently": "^8.2.0",
-    "electron": "^40.4.1",
+    "electron": "^30.0.0",
     "electron-builder": "^24.0.0",
     "eslint": "^8.45.0",
     "eslint-plugin-react-hooks": "^4.6.0",
@@ -84,7 +84,7 @@
     },
     "win": {
       "target": "nsis",
-      "icon": "public/icon.ico",
+      "icon": "dist/icon.ico",
       "requestedExecutionLevel": "asInvoker",
       "publisherName": "Paradox Studios"
     },
@@ -101,5 +101,8 @@
     "linux": {
       "target": "AppImage"
     }
+  },
+  "allowScripts": {
+    "electron@30.0.0": true
   }
 }

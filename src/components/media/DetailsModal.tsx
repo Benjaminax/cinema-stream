@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Tv, Play, BookmarkPlus, Check, Youtube, Maximize2, ArrowLeft, Star, Heart, RefreshCw } from 'lucide-react';
+import { X, Tv, Play, BookmarkPlus, Check, Youtube, Maximize2, ArrowLeft, Star, Heart } from 'lucide-react';
 import { useNetworkStatus } from '../../hooks/useNetworkStatus';
 import { TMDBResult, MediaDetails, Video } from '../../types/media';
 import { getImageUrl, getDetails, getVideos, getIMDbRating, getEpisodeDetails, getSeasonDetails, getSimilar, searchByGenre } from '../../api/tmdb';
