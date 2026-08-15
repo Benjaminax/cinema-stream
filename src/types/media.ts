@@ -42,6 +42,9 @@ export interface TMDBResult {
   still_path?: string; // Path to episode still frame
   season?: number; // Season number for episodes
   episode?: number; // Episode number for episodes
+  // Normalized display helpers (added by normalizeTMDBResult)
+  displayTitle?: string;
+  displayDate?: string;
 }
 
 export interface MediaDetails extends TMDBResult {
@@ -60,6 +63,8 @@ export interface MediaDetails extends TMDBResult {
   imdb_id?: string; // IMDb ID for external rating lookup
   imdb_rating?: number; // IMDb rating fetched from OMDB
   imdb_votes?: string; // IMDb vote count
+  // Collection data (movies may belong to a collection/franchise)
+  belongs_to_collection?: { id: number; name: string; poster_path?: string | null; backdrop_path?: string | null } | null;
   // TV show specific fields
   in_production?: boolean;
   type?: string;

@@ -5,7 +5,7 @@ import MediaRow from '../components/media/MediaRow';
 import DetailsModal from '../components/media/DetailsModal';
 import { TMDBResult, DiscoverParams, Episode } from '../types/media';
 import { playMediaWithTracking } from '../utils/mediaPlayback';
-import { getTrending, getLogos, getDiscover, getCredits, getByStreamingProvider, getVideos, getDetails } from '../api/tmdb';
+import { getTrending, getLogos, getDiscover, getCredits, getByStreamingProvider, getVideos, getDetails, getRecommendations, normalizeTMDBResult } from '../api/tmdb';
 import { getRecentlyWatched, addRecentlyWatched } from '../utils/recentlyWatched';
 import { getImageUrl } from '../api/tmdb';
 import { useNetworkStatus } from '../hooks/useNetworkStatus';
@@ -99,6 +99,8 @@ const Home: React.FC<{ isActive?: boolean }> = ({ isActive = true }) => {
   const [carouselItems, setCarouselItems] = useState<TMDBResult[]>([]);
   const [tvCarouselItems, setTvCarouselItems] = useState<TMDBResult[]>([]);
   const [_recentlyWatched, setRecentlyWatched] = useState<TMDBResult[]>([]);
+  const [becauseYouWatchedItems, setBecauseYouWatchedItems] = useState<TMDBResult[]>([]);
+  const [becauseSeedTitle, setBecauseSeedTitle] = useState<string>('');
   const [_disableEpisodePlayInModal, setDisableEpisodePlayInModal] = useState(false);
 
   const fetchData = async (isRefresh = false) => {
@@ -204,7 +206,7 @@ const Home: React.FC<{ isActive?: boolean }> = ({ isActive = true }) => {
         fetchGenrePages('movie', '37', 3, {}, isRefresh), // Western
         fetchGenrePages('tv', '10759', 3, {}, isRefresh),
         fetchGenrePages('tv', '16', 3, {}, isRefresh),
-        fetchGenrePages('tv', '16', 3, { origin_country: 'JP' }, isRefresh), // Anime
+        fetchGenrePages('tv', '16', 3, {}, isRefresh), // Anime (now US-localized)
         fetchGenrePages('tv', '35', 3, {}, isRefresh),
         fetchGenrePages('tv', '80', 3, {}, isRefresh),
         fetchGenrePages('tv', '99', 3, {}, isRefresh),
@@ -399,7 +401,7 @@ const Home: React.FC<{ isActive?: boolean }> = ({ isActive = true }) => {
     }
   };
 
-  const loadRecentlyWatched = () => {
+  const loadRecentlyWatched = async () => {
     const items = getRecentlyWatched();
     // Map to TMDBResult structure for MediaRow
     const mapped: TMDBResult[] = items.map(item => ({
@@ -425,6 +427,24 @@ const Home: React.FC<{ isActive?: boolean }> = ({ isActive = true }) => {
       progress: item.progress // Map progress from history
     }));
     setRecentlyWatched(mapped);
+
+    // Build "Because you watched ..." recommendations from the most recent local item that has a numeric TMDB id
+    try {
+      setBecauseYouWatchedItems([]);
+      setBecauseSeedTitle('');
+      const seed = items.find(i => (i.type === 'movie' || i.type === 'tv') && typeof i.id === 'number');
+      if (seed && typeof seed.id === 'number') {
+        setBecauseSeedTitle(seed.title || 'this title');
+        // Fetch TMDB recommendations for this seed
+        const recs = await getRecommendations(seed.type as 'movie' | 'tv', Number(seed.id));
+        const normalized = (recs ?? []).map(r => normalizeTMDBResult(r, seed.type as 'movie' | 'tv'));
+        setBecauseYouWatchedItems(normalized);
+      }
+    } catch (err) {
+      console.warn('Failed to build Because you watched row:', err);
+      setBecauseYouWatchedItems([]);
+      setBecauseSeedTitle('');
+    }
   };
 
   useEffect(() => {
@@ -744,6 +764,15 @@ const Home: React.FC<{ isActive?: boolean }> = ({ isActive = true }) => {
               onCardClick={handleMoreInfo}
               onPlay={handlePlay}
             />
+
+            {becauseYouWatchedItems.length > 0 && (
+              <MediaRow
+                title={`Because you watched ${becauseSeedTitle}`}
+                items={becauseYouWatchedItems}
+                onCardClick={handleMoreInfo}
+                onPlay={handlePlay}
+              />
+            )}
 
             <MediaRow
               title="Family Favorites"

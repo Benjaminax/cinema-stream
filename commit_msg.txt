@@ -1,0 +1,11 @@
+﻿recommendation: use TMDB recommendations + US localization; add 'Because you watched' row; auto-bundle VLC; Home anime US-localized; DetailsModal UX & scoring fixes
+
+- Use TMDB /recommendations as primary signal and boost recommended results
+- Enforce language="en-US" & region=US on discover/trending/upcoming/similar/streaming endpoints
+- Remove Home.tsx anime origin_country override so anime reflects US popularity
+- Add 'Because you watched <title>' row driven by local recently-watched history (uses TMDB recommendations when a numeric TMDB id is available)
+- Ensure clicking recommended item opens Overview tab in Details modal
+- Add scripts/bundle-vlc.js auto-download/copy logic and wire electron-builder extraResources
+- Minor TypeScript fixes (unused imports, displayTitle/displayDate types)
+
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>

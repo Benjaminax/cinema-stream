@@ -1,10 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { RefreshCw, TrendingUp, Calendar, Play, Clock, Star, Newspaper, Heart, Info, Tv, ChevronLeft, ChevronRight } from 'lucide-react';
+
+const PLACEHOLDER = new URL('/placeholder.png', import.meta.url).href;
+const PLACEHOLDER_BACKDROP = new URL('/placeholder-backdrop.png', import.meta.url).href;
 import MediaRow from '../components/media/MediaRow';
 import DetailsModal from '../components/media/DetailsModal';
 import { TMDBResult, MediaDetails, Episode } from '../types/media';
-import { getTrending, getDetails, getUpcomingMovies, getUpcomingTV, getPopularMovies, getTopRatedMovies, getDiscover } from '../api/tmdb';
+import { getTrending, getDetails, getUpcomingMovies, getUpcomingTV, getPopularMovies, getTopRatedMovies, getDiscover, getRecommendations, normalizeTMDBResult } from '../api/tmdb';
 import { analyzeUserGenres, filterByGenres, scanLocalLibrary } from '../utils/genreAnalysis';
+import { scoreCandidate, aggregateCandidateScores } from '../utils/scoring';
 import {
   getGenrePreferences,
   getTopGenrePreferences,
@@ -418,13 +422,57 @@ const Popular: React.FC = () => {
 
           setWatchlistUpcoming(mergedDropping);
 
-          // Set "Just For You" - Rest of upcoming (beyond just this week)
-          const combinedRecommendations = [
-            ...filterByGenres(upcomingMoviesData, updatedGenreIds),
-            ...filterByGenres(upcomingTVData, updatedGenreIds)
-          ].filter(item => !mergedDropping.some(d => d.id === item.id))
-            .sort((a, b) => (b.popularity || 0) - (a.popularity || 0));
-          setJustForYou(combinedRecommendations.slice(0, 10));
+          // Set "Just For You" - use TMDB /recommendations aggregated from user's library/watchlist seeds
+          const seeds = [...lMovies, ...watchlist].filter((item, idx, self) => self.findIndex(s => s.id === item.id) === idx).slice(0, 3);
+          const recCandidates: TMDBResult[] = [];
+          try {
+            if (seeds.length > 0) {
+              // Fetch recommendations for each seed in parallel
+              const recPromises = seeds.map(s => getRecommendations(s.media_type || 'movie', s.id));
+              const recResults = await Promise.all(recPromises);
+              recResults.forEach(arr => {
+                (arr || []).forEach(r => recCandidates.push(normalizeTMDBResult(r, r.media_type || 'movie')));
+              });
+
+              // Score and aggregate recommendations
+              const scoredAll: any[] = [];
+              for (let i = 0; i < seeds.length; i++) {
+                const seed = seeds[i];
+                const seedDetails = await getDetails(seed.media_type || 'movie', seed.id).catch(() => null);
+                const seedGenres = seedDetails?.genres?.map((g:any) => g.id) || [];
+                const seedYear = seedDetails?.release_date ? parseInt(seedDetails.release_date.slice(0,4)) : (seedDetails?.first_air_date ? parseInt(seedDetails.first_air_date.slice(0,4)) : undefined);
+                const recs = (recResults[i] || []).map((r:any) => ({ ...normalizeTMDBResult(r, seed.media_type || 'movie'), __sources: ['recommended'] }));
+                // Use scoring utilities (lightweight scoring here)
+                recs.forEach((c:any) => {
+                  const s = scoreCandidate({ genres: seedGenres, year: seedYear, affinity: 1 }, c as TMDBResult);
+                  s.candidate.__sources = Array.from(new Set([...(c.__sources || []), ...(s.candidate.__sources || [])]));
+                  scoredAll.push(s);
+                });
+              }
+
+              // Aggregate and pick top 10
+              const aggregated = aggregateCandidateScores(scoredAll).map(sc => sc.candidate as TMDBResult);
+              const uniqueAgg = aggregated.filter((item, idx, self) => self.findIndex(s => s.id === item.id) === idx);
+              setJustForYou(uniqueAgg.slice(0, 10));
+            } else {
+              // Fallback to genre-based upcoming if no seeds
+              const combinedRecommendations = [
+                ...filterByGenres(upcomingMoviesData, updatedGenreIds),
+                ...filterByGenres(upcomingTVData, updatedGenreIds)
+              ].filter(item => !mergedDropping.some(d => d.id === item.id))
+                .sort((a, b) => (b.popularity || 0) - (a.popularity || 0));
+              setJustForYou(combinedRecommendations.slice(0, 10));
+            }
+          } catch (recError) {
+            console.warn('Error fetching TMDB recommendations for Just For You:', recError);
+            // On error fallback to genre-based approach
+            const combinedRecommendations = [
+              ...filterByGenres(upcomingMoviesData, updatedGenreIds),
+              ...filterByGenres(upcomingTVData, updatedGenreIds)
+            ].filter(item => !mergedDropping.some(d => d.id === item.id))
+              .sort((a, b) => (b.popularity || 0) - (a.popularity || 0));
+            setJustForYou(combinedRecommendations.slice(0, 10));
+          }
 
           // Fetch news based on updated preferences
           if (updatedGenreNames.length > 0) {
@@ -718,6 +766,7 @@ const Popular: React.FC = () => {
                     src={`https://image.tmdb.org/t/p/w1280${pick.backdrop_path}`}
                     alt=""
                     className="w-full h-full object-cover transition-transform duration-[2000ms] group-hover:scale-110"
+                    onError={(e) => { const t = e.target as HTMLImageElement; t.src = PLACEHOLDER_BACKDROP; }}
                   />
                 ) : (
                   <div className="w-full h-full bg-gradient-to-br from-gray-900 to-black" />
@@ -736,6 +785,7 @@ const Popular: React.FC = () => {
                       src={`https://image.tmdb.org/t/p/w342${pick.poster_path}`}
                       alt=""
                       className="relative w-full h-full object-cover rounded-2xl border border-white/20 shadow-2xl transition-transform duration-500 group-hover/poster:-translate-y-2 group-hover/poster:scale-105"
+                      onError={(e) => { const t = e.target as HTMLImageElement; t.src = PLACEHOLDER; }}
                     />
                   </div>
 
@@ -836,7 +886,7 @@ const Popular: React.FC = () => {
                 >
                   <div className="flex gap-4">
                     <div className="w-20 h-28 rounded-lg overflow-hidden flex-shrink-0 relative">
-                      <img src={`https://image.tmdb.org/t/p/w185${item.poster_path}`} className="w-full h-full object-cover" alt="" />
+                      <img src={`https://image.tmdb.org/t/p/w185${item.poster_path}`} className="w-full h-full object-cover" alt="" onError={(e) => { const t = e.target as HTMLImageElement; t.src = PLACEHOLDER; }} />
                       {/* Play Button Overlay */}
                       <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
                         <button
@@ -950,6 +1000,7 @@ const Popular: React.FC = () => {
                       alt={show.name}
                       className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
                       loading="lazy"
+                      onError={(e) => { const t = e.target as HTMLImageElement; t.src = PLACEHOLDER; }}
                     />
                   </div>
                   {renderTVShowStatus(show)}
@@ -1023,6 +1074,7 @@ const Popular: React.FC = () => {
                             alt={item.title || item.name}
                             className="w-full h-full object-cover group-hover:scale-110 transition duration-500"
                             loading="lazy"
+                            onError={(e) => { const t = e.target as HTMLImageElement; t.src = PLACEHOLDER; }}
                           />
                           {/* Play Button Overlay */}
                           <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">

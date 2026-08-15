@@ -10,6 +10,8 @@ import { playMediaWithTracking } from '../utils/mediaPlayback';
 import { GENRE_NAME_MAP } from '../utils/genrePreferences';
 import '../types/electron';
 
+const PLACEHOLDER = new URL('/placeholder.png', import.meta.url).href;
+
 // All available genres for filtering from master map
 const ALL_GENRES = Object.entries(GENRE_NAME_MAP)
     .filter(([id]) => parseInt(id) >= 10749 || [16, 35, 80, 99, 18, 9648, 37].includes(parseInt(id)))
@@ -428,11 +430,11 @@ const LocalSeries: React.FC = () => {
                             </button>
                         </div>
                     ) : (
-                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-6 pb-20">
+                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-6 pb-20">
                             {filteredSeries.map((seriesItem) => (
                                 <div
                                     key={seriesItem.id}
-                                    className="bg-[#18181b] rounded-2xl overflow-hidden hover:scale-105 transition-all duration-300 cursor-pointer group shadow-lg ring-1 ring-white/5 hover:ring-red-500/50 flex flex-col"
+                                                                    className="bg-[#18181b] overflow-hidden transform-gpu transition-transform duration-300 ease-out cursor-pointer hover:scale-125 hover:z-20 shadow-lg flex flex-col"
                                     onClick={() => {
                                         setSelectedItem(seriesItem);
                                         setIsModalOpen(true);
@@ -446,6 +448,7 @@ const LocalSeries: React.FC = () => {
                                                 alt={seriesItem.name}
                                                 className="w-full h-full object-cover"
                                                 loading="lazy"
+                                                onError={(e) => { const t = e.target as HTMLImageElement; t.src = PLACEHOLDER; }}
                                             />
                                         ) : (
                                             <div className="flex flex-col items-center justify-center h-full text-center p-4">
@@ -467,39 +470,6 @@ const LocalSeries: React.FC = () => {
                                         )}
                                     </div>
 
-                                    {/* Series info */}
-                                    <div className="p-4 flex flex-col flex-1">
-                                        <h3 className="text-white font-bold text-base md:text-lg mb-2 leading-snug" title={seriesItem.name}>
-                                            {seriesItem.name}
-                                        </h3>
-
-                                        <div className="flex items-center justify-between mb-3 text-sm text-gray-400 font-medium">
-                                            <span className="bg-gray-800 px-2 py-0.5 rounded text-gray-300">
-                                                {seriesItem.first_air_date ? new Date(seriesItem.first_air_date).getFullYear() : 'Unknown'}
-                                            </span>
-
-                                            {/* Rating fallback */}
-                                            {seriesItem.vote_average > 0 && (
-                                                <span className="bg-gray-900/50 px-1.5 py-0.5 rounded text-gray-500 border border-white/5 text-xs font-bold">
-                                                    {seriesItem.vote_average.toFixed(1)}
-                                                </span>
-                                            )}
-                                        </div>
-
-                                        {/* Genres */}
-                                        {seriesItem.genres && seriesItem.genres.length > 0 && (
-                                            <div className="flex flex-wrap gap-2 mt-auto">
-                                                {seriesItem.genres.slice(0, 2).map(genre => (
-                                                    <span
-                                                        key={genre.id}
-                                                        className="px-3 py-1 bg-gray-800 rounded-full text-[10px] font-semibold text-gray-400 uppercase tracking-wide border border-white/5"
-                                                    >
-                                                        {genre.name}
-                                                    </span>
-                                                ))}
-                                            </div>
-                                        )}
-                                    </div>
                                 </div>
                             ))}
                         </div>

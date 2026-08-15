@@ -74,13 +74,13 @@ export const getTrending = async (
   timeWindow: 'day' | 'week' = 'week',
   region: string = 'US'
 ): Promise<TMDBResult[]> => {
-  const url = `${TMDB_BASE_URL}/trending/${type}/${timeWindow}?api_key=${TMDB_API_KEY}&region=${region}`;
+  const url = `${TMDB_BASE_URL}/trending/${type}/${timeWindow}?api_key=${TMDB_API_KEY}&region=${region}&language=en-US`;
   const data: any = await safeFetch(url);
   return (data?.results ?? []).map((result: TMDBResult) => ({ ...result, media_type: type }));
 };
 
 export const getPopularMovies = async (page: number = 1): Promise<TMDBResult[]> => {
-  const url = `${TMDB_BASE_URL}/discover/movie?api_key=${TMDB_API_KEY}&sort_by=popularity.desc&page=${page}`;
+  const url = `${TMDB_BASE_URL}/discover/movie?api_key=${TMDB_API_KEY}&sort_by=popularity.desc&page=${page}&language=en-US&region=US`;
   const data: any = await safeFetch(url);
   return (data?.results ?? []).map((result: TMDBResult) => ({
     ...result,
@@ -113,6 +113,13 @@ export const searchMedia = async (
   return data ?? { page: 1, results: [], total_pages: 0, total_results: 0 };
 };
 
+export const normalizeTMDBResult = (result: any, defaultType?: 'movie' | 'tv') => {
+  const media_type = result.media_type || defaultType || (result.first_air_date ? 'tv' : (result.release_date ? 'movie' : (result.title && !result.name ? 'movie' : 'tv')));
+  const displayTitle = result.title || result.name || result.original_title || result.original_name || '';
+  const displayDate = result.release_date || result.first_air_date || null;
+  return { ...result, media_type, displayTitle, displayDate };
+};
+
 export const getGenres = async (type: 'movie' | 'tv' = 'movie'): Promise<Genre[]> => {
   const url = `${TMDB_BASE_URL}/genre/${type}/list?api_key=${TMDB_API_KEY}`;
   const data: any = await safeFetch(url);
@@ -120,7 +127,7 @@ export const getGenres = async (type: 'movie' | 'tv' = 'movie'): Promise<Genre[]
 };
 
 export const getUpcomingMovies = async (page: number = 1, region: string = 'US'): Promise<TMDBResult[]> => {
-  const url = `${TMDB_BASE_URL}/movie/upcoming?api_key=${TMDB_API_KEY}&page=${page}&region=${region}`;
+  const url = `${TMDB_BASE_URL}/movie/upcoming?api_key=${TMDB_API_KEY}&page=${page}&region=${region}&language=en-US`;
   const data: any = await safeFetch(url);
   return (data?.results ?? []).map((result: TMDBResult) => ({
     ...result,
@@ -136,7 +143,7 @@ export const getUpcomingTV = async (page: number = 1): Promise<TMDBResult[]> => 
   const todayStr = today.toISOString().split('T')[0];
   const nextMonthStr = nextMonth.toISOString().split('T')[0];
 
-  const url = `${TMDB_BASE_URL}/discover/tv?api_key=${TMDB_API_KEY}&air_date.gte=${todayStr}&air_date.lte=${nextMonthStr}&sort_by=popularity.desc&page=${page}`;
+  const url = `${TMDB_BASE_URL}/discover/tv?api_key=${TMDB_API_KEY}&air_date.gte=${todayStr}&air_date.lte=${nextMonthStr}&sort_by=popularity.desc&page=${page}&language=en-US&region=US`;
   const data: any = await safeFetch(url);
   return (data?.results ?? []).map((result: TMDBResult) => ({
     ...result,
@@ -157,7 +164,7 @@ export const getDiscover = async (
   params: DiscoverParams = {}
 ): Promise<TMDBResult[]> => {
   const { genre, page = 1, region = 'US', origin_country, sort_by = 'popularity.desc' } = params;
-  let url = `${TMDB_BASE_URL}/discover/${type}?api_key=${TMDB_API_KEY}&page=${page}&region=${region}&sort_by=${sort_by}`;
+  let url = `${TMDB_BASE_URL}/discover/${type}?api_key=${TMDB_API_KEY}&page=${page}&region=${region}&sort_by=${sort_by}&language=en-US`;
 
   if (genre) {
     url += `&with_genres=${genre}`;
@@ -205,7 +212,7 @@ export const getByStreamingProvider = async (
   }
 
   const { genre, page = 1, region = 'US', sort_by = 'popularity.desc' } = params;
-  let url = `${TMDB_BASE_URL}/discover/${type}?api_key=${TMDB_API_KEY}&page=${page}&region=${region}&sort_by=${sort_by}&with_watch_providers=${providerId}&watch_region=${region}`;
+  let url = `${TMDB_BASE_URL}/discover/${type}?api_key=${TMDB_API_KEY}&page=${page}&region=${region}&sort_by=${sort_by}&with_watch_providers=${providerId}&watch_region=${region}&language=en-US`;
 
   if (genre) {
     url += `&with_genres=${genre}`;
@@ -302,17 +309,57 @@ export const getSimilar = async (
   type: 'movie' | 'tv',
   id: number
 ): Promise<TMDBResult[]> => {
-  const url = `${TMDB_BASE_URL}/${type}/${id}/similar?api_key=${TMDB_API_KEY}&page=1`;
+  const url = `${TMDB_BASE_URL}/${type}/${id}/similar?api_key=${TMDB_API_KEY}&page=1&language=en-US`;
   const data: any = await safeFetch(url);
   return (data?.results ?? []).map((r: TMDBResult) => ({ ...r, media_type: type }));
+};
+
+export const getRecommendations = async (
+  type: 'movie' | 'tv',
+  id: number,
+  page: number = 1
+): Promise<TMDBResult[]> => {
+  const url = `${TMDB_BASE_URL}/${type}/${id}/recommendations?api_key=${TMDB_API_KEY}&language=en-US&page=${page}`;
+  const data: any = await safeFetch(url);
+  return (data?.results ?? []).map((r: TMDBResult) => ({ ...r, media_type: type }));
+};
+
+export interface Collection {
+  id: number;
+  name: string;
+  overview?: string;
+  poster_path: string | null;
+  backdrop_path: string | null;
+  parts: TMDBResult[];
+}
+
+export const getCollection = async (collectionId: number): Promise<Collection | null> => {
+  const url = `${TMDB_BASE_URL}/collection/${collectionId}?api_key=${TMDB_API_KEY}`;
+  const data: any = await safeFetch(url);
+  if (!data) return null;
+  return {
+    id: data.id,
+    name: data.name,
+    overview: data.overview,
+    poster_path: data.poster_path ?? null,
+    backdrop_path: data.backdrop_path ?? null,
+    parts: (data.parts ?? []).map((p: any) => ({ ...p, media_type: 'movie' as const }))
+  };
 };
 
 export const searchByGenre = async (
   type: 'movie' | 'tv',
   genreId: number,
-  page: number = 1
+  page: number = 1,
+  region: string = 'US',
+  language: string = 'en-US',
+  originalLanguage?: string // e.g., 'en' to prefer English originals
 ): Promise<{ results: TMDBResult[]; total_pages: number; total_results: number }> => {
-  const url = `${TMDB_BASE_URL}/discover/${type}?api_key=${TMDB_API_KEY}&with_genres=${genreId}&page=${page}&sort_by=popularity.desc&vote_average.gte=6.0`;
+  let url = `${TMDB_BASE_URL}/discover/${type}?api_key=${TMDB_API_KEY}&with_genres=${genreId}&page=${page}&sort_by=popularity.desc&vote_average.gte=6.0&region=${region}&language=${language}`;
+  if (originalLanguage) {
+    url += `&with_original_language=${originalLanguage}`;
+  }
+
   const data: any = await safeFetch(url);
   if (!data) return { results: [], total_pages: 0, total_results: 0 };
   

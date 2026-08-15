@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Tv, Play, BookmarkPlus, Check, Youtube, Maximize2, ArrowLeft, Star, Heart } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { X, Tv, Play, BookmarkPlus, Check, Youtube, Maximize2, ArrowLeft } from 'lucide-react';
 import { useNetworkStatus } from '../../hooks/useNetworkStatus';
 import { TMDBResult, MediaDetails, Video } from '../../types/media';
-import { getImageUrl, getDetails, getVideos, getIMDbRating, getEpisodeDetails, getSeasonDetails, getSimilar, searchByGenre } from '../../api/tmdb';
+import { getImageUrl, getDetails, getVideos, getIMDbRating, getEpisodeDetails, getSeasonDetails, getSimilar, getRecommendations, searchByGenre, normalizeTMDBResult, getCollection } from '../../api/tmdb';
+import { scoreCandidate, aggregateCandidateScores, filterCandidates } from '../../utils/scoring';
 import { libraryCache } from '../../utils/libraryCache';
 import { addToMyList, removeFromMyList, isInMyList as checkIsInMyList } from '../../utils/myList';
 import { getRecentlyWatched, normalizePath } from '../../utils/recentlyWatched';
@@ -10,6 +12,7 @@ import { getTopGenrePreferences, getPreferredGenreIds } from '../../utils/genreP
 import { getNextEpisode } from '../../utils/mediaPlayback';
 
 const PLACEHOLDER_BACKDROP = new URL('/placeholder-backdrop.png', import.meta.url).href;
+const PLACEHOLDER = new URL('/placeholder.png', import.meta.url).href;
 
 interface Episode {
   season: number;
@@ -56,6 +59,7 @@ const DetailsModal: React.FC<DetailsModalProps> = ({ item, isOpen, onClose, auto
   const [isTheaterMode, setIsTheaterMode] = useState(false);
   const [similar, setSimilar] = useState<TMDBResult[]>([]);
   const [combinedRecommendations, setCombinedRecommendations] = useState<Array<TMDBResult & { reason?: string; score?: number }>>([]);
+  const [franchiseRecommendations, setFranchiseRecommendations] = useState<Array<TMDBResult & { reason?: string; score?: number }>>([]);
   const [history, setHistory] = useState<TMDBResult[]>([]);
   const [currentItem, setCurrentItem] = useState<TMDBResult | null>(item);
   const [shouldAutoPlayNext, setShouldAutoPlayNext] = useState(false);
@@ -130,67 +134,42 @@ const DetailsModal: React.FC<DetailsModalProps> = ({ item, isOpen, onClose, auto
   };
 
   // Create smart recommendations combining similar content with user preferences
-  const createCombinedRecommendations = (similarItems: TMDBResult[], personalizedItems: TMDBResult[], currentDetails: MediaDetails | null, userPrefs: any[]) => {
-    const recommendations: Array<TMDBResult & { reason?: string; score?: number }> = [];
-    const seen = new Set<number>();
-    
-    // Get recently watched items for "because you watched" recommendations
-    const recentlyWatched = getRecentlyWatched().slice(0, 5);
-    const recentTitles = recentlyWatched.map(item => item.title).filter(Boolean);
-    
-    // Add similar items with reasons
-    similarItems.forEach((item, index) => {
-      if (!seen.has(item.id)) {
-        seen.add(item.id);
-        let reason = 'Similar to this title';
-        let score = 100 - index; // Higher score for earlier items
-        
-        // Check if it matches user's preferred genres
-        if (currentDetails?.genres && item.genre_ids) {
-          const currentGenreIds = currentDetails.genres.map(g => g.id);
-          const matchingGenres = item.genre_ids.filter(id => currentGenreIds.includes(id));
-          if (matchingGenres.length > 0) {
-            const genreName = currentDetails.genres.find(g => g.id === matchingGenres[0])?.name;
-            reason = genreName ? `More ${genreName.toLowerCase()} like this` : reason;
-            score += 10; // Boost score for genre matches
-          }
-        }
-        
-        recommendations.push({ ...item, reason, score });
+  const createCombinedRecommendations = (similarItems: TMDBResult[], recommendedItems: TMDBResult[], personalizedItems: TMDBResult[], currentDetails: MediaDetails | null, userPrefs: any[], mediaType: 'movie' | 'tv', excludeIds: Set<number> = new Set()) => {
+    // Use the scoring utilities to produce deterministic, explainable recommendations
+    const seedGenres = currentDetails?.genres?.map(g => g.id) ?? [];
+    const seedYear = currentDetails?.release_date ? parseInt(currentDetails.release_date.slice(0,4)) : (currentDetails?.first_air_date ? parseInt(currentDetails.first_air_date.slice(0,4)) : undefined);
+
+    // Tag sources for provenance
+    const taggedSimilar = similarItems.map(s => ({ ...s, __sources: ['similar'] } as TMDBResult & { __sources?: string[] }));
+    const taggedRecommended = recommendedItems.map(s => ({ ...s, __sources: ['recommended'] } as TMDBResult & { __sources?: string[] }));
+    const taggedPersonalized = personalizedItems.map(s => ({ ...s, __sources: ['personalized'] } as TMDBResult & { __sources?: string[] }));
+
+    // Hard-filter candidates: prefer same media type and require reasonable genre overlap
+    const allCandidates = [...taggedSimilar, ...taggedRecommended, ...taggedPersonalized];
+    const filtered = filterCandidates(allCandidates, { genres: seedGenres } as any, { requireSameType: true, mediaType, requireGenreDominated: true, genreThreshold: 0.25, seedYear, eraWindowYears: 25, requireSameLanguage: true, seedLanguage: currentDetails?.original_language })
+      .filter(c => !excludeIds.has(c.id));
+
+    // Score each candidate relative to the seed
+    const scored = filtered.map(candidate => {
+      const s = scoreCandidate({ genres: seedGenres, year: seedYear, affinity: 1 }, candidate as TMDBResult);
+      // Boost items TMDB itself recommends — stronger signal
+      if ((candidate as any).__sources?.includes('recommended')) {
+        s.score = s.score * 1.25;
       }
+      // Preserve sources
+      s.candidate.__sources = Array.from(new Set([...(candidate as any).__sources || [], ...(s.candidate.__sources || [])]));
+      return s;
     });
-    
-    // Add personalized recommendations
-    personalizedItems.forEach((item, index) => {
-      if (!seen.has(item.id)) {
-        seen.add(item.id);
-        let reason = 'Recommended for you';
-        let score = 80 - index; // Good score but lower than direct similar
-        
-        // Find which preferred genre this matches
-        if (userPrefs.length > 0 && item.genre_ids) {
-          const matchingPref = userPrefs.find(pref => item.genre_ids?.includes(pref.id));
-          if (matchingPref) {
-            reason = `Because you enjoy ${matchingPref.name.toLowerCase()}`;
-            score += 15; // Boost for matching user preferences
-          }
-        }
-        
-        // Check if it's because of recently watched content
-        if (recentTitles.length > 0 && Math.random() > 0.7) { // Randomly attribute to recent viewing
-          const recentTitle = recentTitles[Math.floor(Math.random() * recentTitles.length)];
-          reason = `Because you watched "${recentTitle}"`;
-          score += 5;
-        }
-        
-        recommendations.push({ ...item, reason, score });
-      }
+
+    // Aggregate multiple seed contributions (if any) and return top 20
+    const aggregated = aggregateCandidateScores(scored).slice(0, 20).map(sc => {
+      const reasonFromPrefs = userPrefs.length > 0 && sc.candidate.genre_ids ? userPrefs.find((p:any) => sc.candidate.genre_ids?.includes(p.id)) : null;
+      let reason = sc.candidate.__sources?.includes('recommended') ? 'Recommended for you' : (sc.candidate.__sources?.includes('similar') ? 'Similar to this title' : 'Recommended for you');
+      if (reasonFromPrefs) reason = `Because you enjoy ${reasonFromPrefs.name.toLowerCase()}`;
+      return { ...sc.candidate, reason, score: sc.score } as TMDBResult & { reason?: string; score?: number };
     });
-    
-    // Sort by score and return top 20
-    return recommendations
-      .sort((a, b) => (b.score || 0) - (a.score || 0))
-      .slice(0, 20);
+
+    return aggregated;
   };
 
   const fetchDetails = async () => {
@@ -220,21 +199,46 @@ const DetailsModal: React.FC<DetailsModalProps> = ({ item, isOpen, onClose, auto
       const userPrefs = getTopGenrePreferences(3);
       const preferredGenreIds = getPreferredGenreIds(3);
       
-      const [detailsData, videosData, similarData, personalizedData] = await Promise.all([
+      const [detailsData, videosData, rawSimilarData, rawRecommendedData, rawPersonalizedData] = await Promise.all([
         getDetails(mediaType, currentItem.id),
         getVideos(mediaType, currentItem.id),
         getSimilar(mediaType, currentItem.id),
+        // TMDB's recommendations endpoint (better base signal)
+        getRecommendations(mediaType, currentItem.id),
         // Get personalized recommendations based on user's genre preferences
         preferredGenreIds.length > 0 ? searchByGenre(mediaType, preferredGenreIds[0], 1).then(data => data.results || []) : Promise.resolve([])
       ]);
       
+      // Normalize results to ensure consistent fields (media_type, displayTitle, displayDate)
+      const normalizedSimilar = (rawSimilarData ?? []).map((r: any) => normalizeTMDBResult(r, mediaType));
+      const normalizedRecommended = (rawRecommendedData ?? []).map((r: any) => normalizeTMDBResult(r, mediaType));
+      const normalizedPersonalized = (rawPersonalizedData ?? []).map((r: any) => normalizeTMDBResult(r, mediaType));
+      
+      // Set base details/video/similar state
       setDetails(detailsData);
       setVideos(videosData);
-      setSimilar(similarData);
-      
-      // Create combined recommendations with reasons
-      const combined = createCombinedRecommendations(similarData, personalizedData, detailsData, userPrefs);
+      setSimilar(normalizedSimilar);
+
+      // Franchise/collection: only movies can belong to a collection in TMDB
+      let franchiseItems: TMDBResult[] = [];
+      if (mediaType === 'movie' && (detailsData as any)?.belongs_to_collection?.id) {
+        try {
+          const collection = await getCollection((detailsData as any).belongs_to_collection.id);
+          franchiseItems = (collection?.parts ?? []).map((p: any) => normalizeTMDBResult(p, 'movie'));
+          // Exclude the current item from franchiseItems
+          franchiseItems = franchiseItems.filter(f => f.id !== detailsData.id);
+        } catch (e) {
+          console.warn('Failed to fetch franchise collection:', e);
+        }
+      }
+
+      const franchiseIdSet = new Set(franchiseItems.map(f => f.id));
+
+      // Create combined recommendations with reasons using normalized items (exclude franchise IDs from the regular pool)
+      const combined = createCombinedRecommendations(normalizedSimilar, normalizedRecommended, normalizedPersonalized, detailsData, userPrefs, mediaType, franchiseIdSet);
       setCombinedRecommendations(combined);
+      setFranchiseRecommendations(franchiseItems.map(f => ({ ...f, reason: (detailsData as any)?.belongs_to_collection?.name ? `Part of ${(detailsData as any).belongs_to_collection.name}` : 'Same franchise', score: Number.POSITIVE_INFINITY } as TMDBResult & { reason?: string; score?: number })));
+
 
       if (currentItem.local_path || currentItem.local_paths) {
         libraryCache.updateMetadata(currentItem.id, mediaType === 'tv' ? 'series' : 'movie', {
@@ -673,6 +677,8 @@ const DetailsModal: React.FC<DetailsModalProps> = ({ item, isOpen, onClose, auto
     if (currentItem) setHistory(prev => [...prev, currentItem]);
     if (autoPlay) setShouldAutoPlayNext(true);
     setCurrentItem(media);
+    // Ensure we show the Overview tab when navigating to a recommended item
+    setActiveTab('overview');
     if (modalContentRef.current) modalContentRef.current.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -780,8 +786,8 @@ const DetailsModal: React.FC<DetailsModalProps> = ({ item, isOpen, onClose, auto
   const pageOrigin = (typeof window !== 'undefined' && window.location && window.location.origin) ? encodeURIComponent(window.location.origin) : encodeURIComponent('https://localhost');
   const trailerSrc = trailer ? `https://${trailerHost}/embed/${trailer.key}?origin=${pageOrigin}&enablejsapi=1&autoplay=1&mute=0&modestbranding=1&rel=0&iv_load_policy=3&playsinline=1` : '';
 
-  return (
-    <div className="fixed inset-0 z-[200] bg-black/85 backdrop-blur-md flex items-center justify-center p-4 sm:p-6" onClick={handleBackdropClick}>
+  return createPortal((
+    <div className="fixed inset-0 z-[99999] bg-black/85 backdrop-blur-md flex items-center justify-center p-4 sm:p-6" onClick={handleBackdropClick}>
       <div ref={modalContentRef} className="w-full max-w-[1000px] h-full max-h-[92vh] overflow-y-auto overscroll-contain flex flex-col rounded-3xl border border-white/10 bg-[#111] relative shadow-2xl scrollbar-hide">
 
         {/* Playback error banner */}
@@ -808,6 +814,7 @@ const DetailsModal: React.FC<DetailsModalProps> = ({ item, isOpen, onClose, auto
                   src={nextEpisode.local_still_path || getImageUrl(nextEpisode.still_path || null, 'w500')} 
                   className="w-full h-full object-cover opacity-60" 
                   alt="" 
+                  onError={(e) => { const t = e.target as HTMLImageElement; t.src = PLACEHOLDER_BACKDROP; }}
                 />
                 <div className="absolute inset-0 flex items-center justify-center">
                   <button 
@@ -1221,6 +1228,7 @@ const DetailsModal: React.FC<DetailsModalProps> = ({ item, isOpen, onClose, auto
                                     src={ep.local_still_path || getImageUrl(ep.still_path || null, 'w342')} 
                                     className="w-full h-full object-cover" 
                                     alt=""
+                                    onError={(e) => { const t = e.target as HTMLImageElement; t.src = PLACEHOLDER_BACKDROP; }}
                                   />
                                 ) : (
                                   <div className="w-full h-full bg-gradient-to-br from-gray-700 to-gray-800 flex items-center justify-center">
@@ -1275,60 +1283,36 @@ const DetailsModal: React.FC<DetailsModalProps> = ({ item, isOpen, onClose, auto
 
             {activeTab === 'more-like-this' && (
               <div>
+                {franchiseRecommendations.length > 0 && (
+                  <div className="mb-6">
+                    <h3 className="text-2xl font-black text-white uppercase tracking-wider mb-4">Franchise</h3>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 mb-4">
+                      {franchiseRecommendations.map((item) => (
+                        <div
+                          key={`franchise-${item.id}`}
+                          onClick={() => handleItemClick(item)}
+                          className="relative cursor-pointer overflow-hidden aspect-[2/3]"
+                        >
+                          <img src={getImageUrl(item.poster_path, 'w500')} className="w-full h-full object-cover" alt={item.displayTitle || item.title || item.name} onError={(e) => { const t = e.target as HTMLImageElement; t.src = PLACEHOLDER; }} />
+                          <div className="absolute top-2 left-2 bg-black/60 text-[10px] px-2 py-1 rounded-full text-white font-black uppercase">{item.media_type === 'tv' ? 'Series' : 'Movie'}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {combinedRecommendations.length > 0 ? (
                   <div className="space-y-6">
-                    {/* User's preferred genres summary */}
-                    {getTopGenrePreferences(3).length > 0 && (
-                      <div className="bg-white/5 rounded-xl p-4 mb-6">
-                        <div className="flex items-center gap-2 mb-2">
-                          <Heart size={16} className="text-red-500" />
-                          <span className="text-sm font-medium text-white/90">Your favorite genres:</span>
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          {getTopGenrePreferences(3).map((genre) => (
-                            <span key={genre.id} className="px-3 py-1 bg-red-600/20 text-red-400 rounded-full text-xs font-medium border border-red-600/30">
-                              {genre.name} ({genre.count})
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    
+                    <h3 className="text-2xl font-black text-white uppercase tracking-wider">Recommended For You</h3>
                     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
                       {combinedRecommendations.map((item) => (
-                        <div key={item.id} onClick={() => handleItemClick(item)} className="group/item relative cursor-pointer overflow-hidden rounded-xl border border-white/10 hover:border-white/30 transition-all hover:scale-105 active:scale-95 aspect-[2/3]">
-                          <img src={getImageUrl(item.poster_path, 'w500')} className="w-full h-full object-cover" alt={item.title || item.name} />
-                          
-                          {/* Recommendation score indicator */}
-                          {item.score && item.score > 90 && (
-                            <div className="absolute top-2 left-2 bg-red-600 text-white text-xs font-bold px-2 py-1 rounded-full flex items-center gap-1">
-                              <Star size={10} fill="white" />
-                              Hot
-                            </div>
-                          )}
-                          
-                          <div className="absolute inset-0 bg-black/60 opacity-0 group-hover/item:opacity-100 transition-opacity flex flex-col items-center justify-center p-4 text-center">
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleItemClick(item, true);
-                              }}
-                              className="group/play mb-3 p-4 bg-white/10 hover:bg-red-600 backdrop-blur-md rounded-full transition-all duration-300 border border-white/20 hover:border-red-600 hover:scale-110 shadow-xl"
-                            >
-                              <Play size={24} fill="white" className="text-white translate-x-0.5" />
-                            </button>
-                            <span className="text-xs font-black text-white uppercase tracking-tighter line-clamp-2 mb-2">{item.title || item.name}</span>
-                            {item.reason && (
-                              <span className="text-xs text-white/70 font-medium line-clamp-2 italic">{item.reason}</span>
-                            )}
-                          </div>
-                          
-                          {/* Bottom gradient with reason */}
-                          {item.reason && (
-                            <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-3">
-                              <span className="text-xs text-white/80 font-medium line-clamp-1 italic">{item.reason}</span>
-                            </div>
-                          )}
+                        <div
+                          key={item.id}
+                          onClick={() => handleItemClick(item)}
+                          className="relative cursor-pointer overflow-hidden aspect-[2/3]"
+                        >
+                          <img src={getImageUrl(item.poster_path, 'w500')} className="w-full h-full object-cover" alt={item.displayTitle || item.title || item.name} onError={(e) => { const t = e.target as HTMLImageElement; t.src = PLACEHOLDER; }} />
+                          <div className="absolute top-2 left-2 bg-black/60 text-[10px] px-2 py-1 rounded-full text-white font-black uppercase">{item.media_type === 'tv' ? 'Series' : 'Movie'}</div>
                         </div>
                       ))}
                     </div>
@@ -1350,7 +1334,7 @@ const DetailsModal: React.FC<DetailsModalProps> = ({ item, isOpen, onClose, auto
         {loading && !details && <div className="absolute inset-0 bg-[#111]/80 backdrop-blur-sm flex items-center justify-center z-[100]"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-red-600"></div></div>}
       </div>
     </div>
-  );
+  ), document.body);
 };
 
 export default DetailsModal;
