@@ -1,5 +1,5 @@
 import { TMDBResult } from '../types/media';
-import { parseMediaFilename, ParsedMediaInfo } from './mediaParser';
+import { parseMediaFilename, ParsedMediaInfo, stripYearFromTitle, extractYearAndCleanTitle } from './mediaParser';
 
 export interface LocalMediaFile {
   name: string;
@@ -11,7 +11,7 @@ export interface LocalMediaFile {
 }
 
 // Re-export for backward compatibility
-export { parseMediaFilename };
+export { parseMediaFilename, stripYearFromTitle, extractYearAndCleanTitle };
 export type { ParsedMediaInfo };
 
 // Common genre keywords and their corresponding TMDB genre IDs

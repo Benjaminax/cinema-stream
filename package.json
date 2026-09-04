@@ -1,9 +1,9 @@
 {
-  "name": "cinestream",
+  "name": "theora",
   "version": "1.0.0",
   "description": "Premium Desktop Media Streaming Platform",
   "author": "Benjamin",
-  "publisher": "Paradox Studios",
+  "publisher": "Benjamin Inc.",
   "main": "dist-electron/main.js",
   "homepage": "./",
   "scripts": {
@@ -54,9 +54,9 @@
     "adm-zip": "^0.5.11"
   },
   "build": {
-    "appId": "com.cinestream.app",
-    "productName": "CINESTREAM",
-    "copyright": "Copyright © 2026 Paradox Studios",
+    "appId": "com.theora.app",
+    "productName": "THEORA",
+    "copyright": "Copyright © 2026 Benjamin Inc.",
     "directories": {
       "output": "dist"
     },
@@ -87,7 +87,7 @@
       "target": "nsis",
       "icon": "dist/icon.ico",
       "requestedExecutionLevel": "asInvoker",
-      "publisherName": "Paradox Studios"
+      "publisherName": "Benjamin Inc."
     },
     "nsis": {
       "oneClick": false,
@@ -95,7 +95,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "CINESTREAM",
+      "shortcutName": "THEORA",
       "installerIcon": "public/icon.ico",
       "uninstallerIcon": "public/icon.ico"
     },

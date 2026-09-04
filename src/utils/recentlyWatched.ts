@@ -1,3 +1,5 @@
+import { recordMediaInteraction } from './persistentWatchHistory';
+
 export type RecentlyWatchedItem = {
   id: string | number;
   title: string;
@@ -73,6 +75,14 @@ export const addRecentlyWatched = (item: Omit<RecentlyWatchedItem, 'at'>) => {
 
     const updated = [newItem, ...filtered].slice(0, MAX_ITEMS);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+
+    // Also persist permanently in theora_persistent_watch_history so suggestions survive file deletion
+    recordMediaInteraction(
+      newItem,
+      item.type === 'tv' || item.type === 'episode' ? 'tv' : 'movie',
+      true
+    );
+
     // notify listeners
     try {
       window.dispatchEvent(new CustomEvent('recently-watched-updated'));

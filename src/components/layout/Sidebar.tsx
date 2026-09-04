@@ -5,16 +5,64 @@ import {
   Film,
   TrendingUp,
   Settings,
-  ChevronLeft,
   Search as SearchIcon,
   User,
   Clock,
   BookmarkPlus,
-  LogOut,
-  Play
+  LogOut
 } from 'lucide-react';
 
 type TabKey = 'home' | 'series' | 'movies' | 'popular' | 'search' | 'settings' | 'recent' | 'mylist';
+
+// Animated 3-line Hamburger Menu Icon with symmetrical morphing transition
+const AnimatedHamburger: React.FC<{ isExpanded: boolean; onClick: () => void }> = ({ isExpanded, onClick }) => {
+  return (
+    <button
+      onClick={onClick}
+      className={`relative rounded-xl transition-all duration-300 group flex items-center justify-center focus:outline-none ${
+        isExpanded
+          ? 'w-10 h-10 hover:bg-white/10 text-gray-300 hover:text-white'
+          : 'w-11 h-11 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-red-500/50 shadow-lg hover:shadow-red-950/40 text-white'
+      }`}
+      title={isExpanded ? 'Collapse sidebar' : 'Expand sidebar'}
+      aria-label="Toggle navigation menu"
+    >
+      <div className="w-5 h-5 relative flex items-center justify-center">
+        {/* Top bar */}
+        <span
+          className={`absolute h-0.5 w-5 rounded-full transition-all duration-300 ease-in-out ${
+            isExpanded
+              ? 'rotate-45 bg-red-500'
+              : '-translate-y-1.5 bg-white group-hover:bg-red-400'
+          }`}
+        />
+        {/* Middle bar */}
+        <span
+          className={`absolute h-0.5 rounded-full transition-all duration-200 ease-in-out ${
+            isExpanded
+              ? 'w-0 opacity-0 scale-x-0'
+              : 'w-3.5 bg-red-500 group-hover:w-5 group-hover:bg-red-400 opacity-100'
+          }`}
+        />
+        {/* Bottom bar */}
+        <span
+          className={`absolute h-0.5 w-5 rounded-full transition-all duration-300 ease-in-out ${
+            isExpanded
+              ? '-rotate-45 bg-red-500'
+              : 'translate-y-1.5 bg-white group-hover:bg-red-400'
+          }`}
+        />
+      </div>
+
+      {/* Hover tooltip for collapsed state */}
+      {!isExpanded && (
+        <div className="absolute left-full ml-4 px-3 py-1.5 bg-gray-900 border border-white/10 text-white text-xs font-medium rounded-lg opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-50 pointer-events-none drop-shadow-xl translate-x-2 group-hover:translate-x-0 duration-200">
+          Expand Menu
+        </div>
+      )}
+    </button>
+  );
+};
 
 interface SidebarProps {
   activeTab: TabKey;
@@ -80,30 +128,22 @@ const Sidebar: React.FC<SidebarProps> = ({
       {/* Content Container */}
       <div className="relative z-10 flex flex-col h-full overflow-y-auto scrollbar-hide py-6">
 
-        {/* Header / Brand */}
-        <div className={`px-6 mb-10 flex items-center ${isExpanded ? 'justify-between' : 'justify-center'}`}>
+        {/* Header / Brand with Animated Hamburger */}
+        <div className={`px-6 mb-8 flex items-center ${isExpanded ? 'justify-between' : 'justify-center'}`}>
           {isExpanded ? (
-            <div className="flex items-center gap-3 animate-in fade-in duration-300">
-              <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center shadow-lg shadow-red-900/40">
-                <Play className="w-4 h-4 text-white fill-current" />
+            <>
+              <div className="flex items-center gap-3 animate-in fade-in duration-300">
+                <div className="w-8 h-8 rounded-lg overflow-hidden bg-black border border-white/15 flex items-center justify-center shadow-lg shadow-red-900/30 shrink-0">
+                  <img src="/logo.png" alt="THEORA Logo" className="w-full h-full object-cover" />
+                </div>
+                <span className="font-black text-xl tracking-wider text-transparent bg-clip-text bg-gradient-to-r from-white via-gray-100 to-gray-400">
+                  THEORA
+                </span>
               </div>
-              <span className="font-bold text-xl tracking-wide text-transparent bg-clip-text bg-gradient-to-r from-white to-gray-400">
-                CINESTREAM
-              </span>
-            </div>
+              <AnimatedHamburger isExpanded={isExpanded} onClick={toggleSidebar} />
+            </>
           ) : (
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center shadow-lg shadow-red-900/40 hover:scale-105 transition-transform duration-300 cursor-pointer" onClick={toggleSidebar}>
-              <Play className="w-5 h-5 text-white fill-current" />
-            </div>
-          )}
-
-          {isExpanded && (
-            <button
-              onClick={toggleSidebar}
-              className="p-2 rounded-full hover:bg-white/5 text-gray-400 hover:text-white transition-colors"
-            >
-              <ChevronLeft className="h-5 w-5" />
-            </button>
+            <AnimatedHamburger isExpanded={isExpanded} onClick={toggleSidebar} />
           )}
         </div>
 

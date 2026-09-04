@@ -2,16 +2,19 @@ import React, { useState, useEffect } from 'react';
 import { RefreshCw } from 'lucide-react';
 import HeroCarousel from '../components/media/HeroCarousel';
 import MediaRow from '../components/media/MediaRow';
+import FranchisesRow from '../components/media/FranchisesRow';
 import DetailsModal from '../components/media/DetailsModal';
-import { TMDBResult, DiscoverParams, Episode } from '../types/media';
+import { TMDBResult, DiscoverParams, Episode, Franchise } from '../types/media';
 import { playMediaWithTracking } from '../utils/mediaPlayback';
-import { getTrending, getLogos, getDiscover, getCredits, getByStreamingProvider, getVideos, getDetails, getRecommendations, normalizeTMDBResult } from '../api/tmdb';
+import { getTrending, getLogos, getDiscover, getCredits, getByStreamingProvider, getVideos, getDetails, getRecommendations, normalizeTMDBResult, getFeaturedFranchises } from '../api/tmdb';
 import { getRecentlyWatched, addRecentlyWatched } from '../utils/recentlyWatched';
 import { getImageUrl } from '../api/tmdb';
 import { useNetworkStatus } from '../hooks/useNetworkStatus';
 import NoInternetConnection from '../components/offline/NoInternetConnection';
+import { getPersistentRecommendations } from '../utils/persistentWatchHistory';
 
 const Home: React.FC<{ isActive?: boolean }> = ({ isActive = true }) => {
+  const [franchises, setFranchises] = useState<Franchise[]>([]);
   const [trendingMovies, setTrendingMovies] = useState<TMDBResult[]>([]);
   const [trendingTV, setTrendingTV] = useState<TMDBResult[]>([]);
   const [actionMovies, setActionMovies] = useState<TMDBResult[]>([]);
@@ -195,7 +198,7 @@ const Home: React.FC<{ isActive?: boolean }> = ({ isActive = true }) => {
         fetchGenrePages('movie', '878', 3, {}, isRefresh),
         fetchGenrePages('movie', '10749', 3, {}, isRefresh),
         fetchGenrePages('movie', '53', 3, {}, isRefresh),
-        fetchGenrePages('movie', '16', 3, {}, isRefresh),
+        fetchGenrePages('movie', '16', 3, { origin_country: 'US|GB' }, isRefresh),
         fetchGenrePages('movie', '12', 3, {}, isRefresh),
         fetchGenrePages('movie', '14', 3, {}, isRefresh),
         fetchGenrePages('movie', '80', 3, {}, isRefresh),
@@ -205,8 +208,8 @@ const Home: React.FC<{ isActive?: boolean }> = ({ isActive = true }) => {
         fetchGenrePages('movie', '99', 3, {}, isRefresh), // Documentary
         fetchGenrePages('movie', '37', 3, {}, isRefresh), // Western
         fetchGenrePages('tv', '10759', 3, {}, isRefresh),
-        fetchGenrePages('tv', '16', 3, {}, isRefresh),
-        fetchGenrePages('tv', '16', 3, {}, isRefresh), // Anime (now US-localized)
+        fetchGenrePages('tv', '16', 3, { origin_country: 'US|GB' }, isRefresh),
+        fetchGenrePages('tv', '16', 3, { origin_country: 'US|GB' }, isRefresh), // US/UK Animated Hits (no Japanese anime)
         fetchGenrePages('tv', '35', 3, {}, isRefresh),
         fetchGenrePages('tv', '80', 3, {}, isRefresh),
         fetchGenrePages('tv', '99', 3, {}, isRefresh),
@@ -313,6 +316,15 @@ const Home: React.FC<{ isActive?: boolean }> = ({ isActive = true }) => {
         return isRefresh ? selected.sort(() => Math.random() - 0.5) : selected;
       };
 
+      // Strict US & UK Animation Filter: exclude all Japanese anime and enforce US/UK Western production
+      const isWesternAnimation = (item: TMDBResult) => {
+        const origin = (item as any).origin_country || [];
+        const lang = (item as any).original_language;
+        const isNotJapanese = lang !== 'ja' && !origin.includes('JP');
+        const isWestern = origin.includes('US') || origin.includes('GB') || origin.length === 0;
+        return isNotJapanese && isWestern;
+      };
+
       setActionMovies(processGenre(actionMoviesData));
       setComedyMovies(processGenre(comedyMoviesData));
       setDramaMovies(processGenre(dramaMoviesData));
@@ -320,7 +332,7 @@ const Home: React.FC<{ isActive?: boolean }> = ({ isActive = true }) => {
       setScifiMovies(processGenre(scifiMoviesData));
       setRomanceMovies(processGenre(romanceMoviesData));
       setThrillerMovies(processGenre(thrillerMoviesData));
-      setAnimationMovies(processGenre(animationMoviesData));
+      setAnimationMovies(processGenre(animationMoviesData.filter(isWesternAnimation)));
       setAdventureMovies(processGenre(adventureMoviesData));
       setFantasyMovies(processGenre(fantasyMoviesData));
       setCrimeMovies(processGenre(crimeMoviesData));
@@ -331,8 +343,8 @@ const Home: React.FC<{ isActive?: boolean }> = ({ isActive = true }) => {
       setWesternMovies(processGenre(westernMoviesData));
 
       setActionTV(processTVGenre(actionTVData));
-      setAnimationTV(processTVGenre(animationTVData));
-      setAnimeTV(processTVGenre(animeTVData));
+      setAnimationTV(processTVGenre(animationTVData.filter(isWesternAnimation)));
+      setAnimeTV(processTVGenre(animeTVData.filter(isWesternAnimation)));
       setComedyTV(processTVGenre(comedyTVData));
       setCrimeTV(processTVGenre(crimeTVData));
       setDocumentaryTV(processTVGenre(documentaryTVData));
@@ -344,6 +356,25 @@ const Home: React.FC<{ isActive?: boolean }> = ({ isActive = true }) => {
       setWesternTV(processTVGenre(westernTVData));
       setRealityTV(processTVGenre(realityTVData));
       setNewsTV(processTVGenre(newsTVData));
+
+      // Fetch featured franchises
+      try {
+        const featuredFranchisesData = await getFeaturedFranchises();
+        setFranchises(featuredFranchisesData);
+      } catch (fErr) {
+        console.error('Error loading featured franchises:', fErr);
+      }
+
+      // Load personalized "Because you watched" recommendations from persistent history
+      try {
+        const recs = await getPersistentRecommendations();
+        if (recs.seedTitles.length > 0 && recs.suggestedMovies.length > 0) {
+          setBecauseSeedTitle(recs.seedTitles[0]);
+          setBecauseYouWatchedItems(recs.suggestedMovies);
+        }
+      } catch (recErr) {
+        console.warn('Failed to load recommendations for Home:', recErr);
+      }
 
       // Set streaming service movies
       setNetflixMovies(processGenre(netflixMoviesData));
@@ -759,11 +790,20 @@ const Home: React.FC<{ isActive?: boolean }> = ({ isActive = true }) => {
 
           <div className="px-8 md:px-16 py-8 space-y-8">
             <MediaRow
-              title="Trending Movies"
+              title="Trending Now: Blockbusters"
               items={trendingMovies}
               onCardClick={handleMoreInfo}
               onPlay={handlePlay}
             />
+
+            {/* Featured Franchises Carousel */}
+            {franchises.length > 0 && (
+              <FranchisesRow
+                franchises={franchises}
+                onSelectMovie={handleMoreInfo}
+                onPlayMovie={handlePlay}
+              />
+            )}
 
             {becauseYouWatchedItems.length > 0 && (
               <MediaRow
@@ -775,112 +815,112 @@ const Home: React.FC<{ isActive?: boolean }> = ({ isActive = true }) => {
             )}
 
             <MediaRow
-              title="Family Favorites"
+              title="Family Movie Night & Feel-Good Adventures"
               items={familyMovies}
               onCardClick={handleMoreInfo}
               onPlay={handlePlay}
             />
 
             <MediaRow
-              title="Action-Packed Adventures"
+              title="High-Octane Action & Adrenaline"
               items={actionMovies}
               onCardClick={handleMoreInfo}
               onPlay={handlePlay}
             />
 
             <MediaRow
-              title="Side-Splitting Comedies"
+              title="30 Mins of Laughter & Irreverent Comedies"
               items={comedyMovies}
               onCardClick={handleMoreInfo}
               onPlay={handlePlay}
             />
 
             <MediaRow
-              title="Heartfelt Dramas"
+              title="Emotional & Binge-Worthy Dramas"
               items={dramaMovies}
               onCardClick={handleMoreInfo}
               onPlay={handlePlay}
             />
 
             <MediaRow
-              title="Spine-Chilling Horrors"
+              title="Late-Night Horrors & Dark Thrills"
               items={horrorMovies}
               onCardClick={handleMoreInfo}
               onPlay={handlePlay}
             />
 
             <MediaRow
-              title="Mind-Bending Sci-Fi"
+              title="Mind-Bending Sci-Fi & Alternate Realities"
               items={scifiMovies}
               onCardClick={handleMoreInfo}
               onPlay={handlePlay}
             />
 
             <MediaRow
-              title="Romantic Love Stories"
+              title="Swoonworthy Romance & Love Stories"
               items={romanceMovies}
               onCardClick={handleMoreInfo}
               onPlay={handlePlay}
             />
 
             <MediaRow
-              title="Edge-of-Your-Seat Thrillers"
+              title="Edge-of-Your-Seat Suspense & Crime Thrillers"
               items={thrillerMovies}
               onCardClick={handleMoreInfo}
               onPlay={handlePlay}
             />
 
             <MediaRow
-              title="Animated Wonders"
+              title="Acclaimed Animated Masterpieces (US & UK)"
               items={animationMovies}
               onCardClick={handleMoreInfo}
               onPlay={handlePlay}
             />
 
             <MediaRow
-              title="Epic Adventures"
+              title="Epic Quests & Big-Screen Adventures"
               items={adventureMovies}
               onCardClick={handleMoreInfo}
               onPlay={handlePlay}
             />
 
             <MediaRow
-              title="Magical Fantasy Worlds"
+              title="Witches, Wizards & Magical Worlds"
               items={fantasyMovies}
               onCardClick={handleMoreInfo}
               onPlay={handlePlay}
             />
 
             <MediaRow
-              title="Crime & Mystery"
+              title="Dark Crime Sagas & Whodunits"
               items={crimeMovies}
               onCardClick={handleMoreInfo}
               onPlay={handlePlay}
             />
 
             <MediaRow
-              title="War & History"
+              title="Gritty Military & Historical Epics"
               items={warMovies}
               onCardClick={handleMoreInfo}
               onPlay={handlePlay}
             />
 
             <MediaRow
-              title="Music & Musicals"
+              title="Musical Showstoppers & Concert Films"
               items={musicMovies}
               onCardClick={handleMoreInfo}
               onPlay={handlePlay}
             />
 
             <MediaRow
-              title="Documentary Features"
+              title="Eye-Opening Real Stories & Documentaries"
               items={documentaryMovies}
               onCardClick={handleMoreInfo}
               onPlay={handlePlay}
             />
 
             <MediaRow
-              title="Western Classics"
+              title="Wild Frontier & Gritty Westerns"
               items={westernMovies}
               onCardClick={handleMoreInfo}
               onPlay={handlePlay}
@@ -1000,15 +1040,24 @@ const Home: React.FC<{ isActive?: boolean }> = ({ isActive = true }) => {
 
           <div className="px-8 md:px-16 py-8 space-y-8">
             <MediaRow
-              title="Trending TV Shows"
+              title="Trending Now: Top TV Series"
               items={trendingTV}
               onCardClick={(item) => { setDisableEpisodePlayInModal(true); handleMoreInfo(item); }}
               onPlay={handlePlay}
               disableEpisodePlay={true}
             />
 
+            {/* Featured Franchises Carousel */}
+            {franchises.length > 0 && (
+              <FranchisesRow
+                franchises={franchises}
+                onSelectMovie={handleMoreInfo}
+                onPlayMovie={handlePlay}
+              />
+            )}
+
             <MediaRow
-              title="Popular TV Shows"
+              title="Binge-Worthy Series & Fan Favorites"
               items={trendingTV.slice().reverse()} // Just reverse for variety
               onCardClick={(item) => { setDisableEpisodePlayInModal(true); handleMoreInfo(item); }}
               onPlay={handlePlay}
@@ -1016,7 +1065,7 @@ const Home: React.FC<{ isActive?: boolean }> = ({ isActive = true }) => {
             />
 
             <MediaRow
-              title="Action-Packed Adventures"
+              title="Explosive Action & Adventure Series"
               items={actionTV}
               onCardClick={(item) => { setDisableEpisodePlayInModal(true); handleMoreInfo(item); }}
               onPlay={handlePlay}
@@ -1024,7 +1073,7 @@ const Home: React.FC<{ isActive?: boolean }> = ({ isActive = true }) => {
             />
 
             <MediaRow
-              title="Animated Series"
+              title="Binge-Worthy US & UK Animation"
               items={animationTV}
               onCardClick={(item) => { setDisableEpisodePlayInModal(true); handleMoreInfo(item); }}
               onPlay={handlePlay}
@@ -1032,7 +1081,7 @@ const Home: React.FC<{ isActive?: boolean }> = ({ isActive = true }) => {
             />
 
             <MediaRow
-              title="Anime Adventures"
+              title="30 Mins of Laughter: US & UK Animated Hits"
               items={animeTV}
               onCardClick={(item) => { setDisableEpisodePlayInModal(true); handleMoreInfo(item); }}
               onPlay={handlePlay}
@@ -1040,7 +1089,7 @@ const Home: React.FC<{ isActive?: boolean }> = ({ isActive = true }) => {
             />
 
             <MediaRow
-              title="Hilarious Sitcoms"
+              title="30 Mins of Laughter & Comedy Hits"
               items={comedyTV}
               onCardClick={(item) => { setDisableEpisodePlayInModal(true); handleMoreInfo(item); }}
               onPlay={handlePlay}
@@ -1048,7 +1097,7 @@ const Home: React.FC<{ isActive?: boolean }> = ({ isActive = true }) => {
             />
 
             <MediaRow
-              title="Crime Dramas"
+              title="Binge-Worthy Crime Sagas & Investigations"
               items={crimeTV}
               onCardClick={(item) => { setDisableEpisodePlayInModal(true); handleMoreInfo(item); }}
               onPlay={handlePlay}
@@ -1056,63 +1105,63 @@ const Home: React.FC<{ isActive?: boolean }> = ({ isActive = true }) => {
             />
 
             <MediaRow
-              title="Documentary Series"
+              title="Fascinating Docuseries & True Crime"
               items={documentaryTV}
               onCardClick={handleMoreInfo}
               onPlay={handlePlay}
             />
 
             <MediaRow
-              title="Gripping Dramas"
+              title="Deep, Binge-Worthy TV Dramas"
               items={dramaTV}
               onCardClick={handleMoreInfo}
               onPlay={handlePlay}
             />
 
             <MediaRow
-              title="Family-Friendly Shows"
+              title="Kids & Family TV Fun"
               items={familyTV}
               onCardClick={handleMoreInfo}
               onPlay={handlePlay}
             />
 
             <MediaRow
-              title="Mystery & Suspense"
+              title="Twisted Mysteries & Psychological Thrillers"
               items={mysteryTV}
               onCardClick={handleMoreInfo}
               onPlay={handlePlay}
             />
 
             <MediaRow
-              title="Sci-Fi & Fantasy"
+              title="Otherworldly Sci-Fi & Epic Fantasies"
               items={scifiTV}
               onCardClick={handleMoreInfo}
               onPlay={handlePlay}
             />
 
             <MediaRow
-              title="Talk Shows"
+              title="Late Night Laughs & Talk Shows"
               items={talkTV}
               onCardClick={handleMoreInfo}
               onPlay={handlePlay}
             />
 
             <MediaRow
-              title="Western Classics"
+              title="Gunslingers & Frontier Legends"
               items={westernTV}
               onCardClick={handleMoreInfo}
               onPlay={handlePlay}
             />
 
             <MediaRow
-              title="Reality TV"
+              title="Addictive Reality TV & Competitions"
               items={realityTV}
               onCardClick={handleMoreInfo}
               onPlay={handlePlay}
             />
 
             <MediaRow
-              title="News & Current Affairs"
+              title="Global News & In-Depth Journalism"
               items={newsTV}
               onCardClick={handleMoreInfo}
               onPlay={handlePlay}

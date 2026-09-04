@@ -26,6 +26,7 @@ interface SortProgress {
 interface SortResults {
   moved: number;
   skipped: number;
+  skippedDownloading?: number;
   errors: string[];
 }
 
@@ -34,6 +35,14 @@ const Settings: React.FC = () => {
   const [moviesFolder, setMoviesFolder] = useState<string>('');
   const [seriesFolder, setSeriesFolder] = useState<string>('');
   const [mediaExtensions] = useState<string[]>(['.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v']);
+  const [excludeDownloading, setExcludeDownloading] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('theora_exclude_downloading');
+      return saved !== null ? JSON.parse(saved) : true;
+    } catch {
+      return true;
+    }
+  });
   const [isSorting, setIsSorting] = useState(false);
   const [sortProgress, setSortProgress] = useState<SortProgress | null>(null);
   const [sortResults, setSortResults] = useState<SortResults | null>(null);
@@ -65,6 +74,7 @@ const Settings: React.FC = () => {
         if (settings.downloadsFolders) setDownloadsFolders(settings.downloadsFolders);
         if (settings.moviesFolder) setMoviesFolder(settings.moviesFolder);
         if (settings.seriesFolder) setSeriesFolder(settings.seriesFolder);
+        if (typeof settings.excludeDownloading === 'boolean') setExcludeDownloading(settings.excludeDownloading);
       }
     } catch (error) {
       console.error('Error loading settings:', error);
@@ -76,9 +86,11 @@ const Settings: React.FC = () => {
       const settings = {
         downloadsFolders,
         moviesFolder,
-        seriesFolder
+        seriesFolder,
+        excludeDownloading
       };
       localStorage.setItem('cinestream-settings', JSON.stringify(settings));
+      localStorage.setItem('theora_exclude_downloading', JSON.stringify(excludeDownloading));
     } catch (error) {
       console.error('Error saving settings:', error);
     }
@@ -86,7 +98,7 @@ const Settings: React.FC = () => {
 
   useEffect(() => {
     saveSettings();
-  }, [downloadsFolders, moviesFolder, seriesFolder]);
+  }, [downloadsFolders, moviesFolder, seriesFolder, excludeDownloading]);
 
   const initializeDefaultPaths = async () => {
     try {
@@ -157,7 +169,8 @@ const Settings: React.FC = () => {
         downloadsFolders: downloadsFolders.filter(f => f.trim() !== ''),
         moviesFolder: moviesFolder.trim(),
         seriesFolder: seriesFolder.trim(),
-        mediaExtensions
+        mediaExtensions,
+        excludeDownloading
       };
 
       const results = await window.electronAPI.sortFiles(options);
@@ -324,12 +337,21 @@ const Settings: React.FC = () => {
             </h2>
 
             <div className="bg-[#121212]/60 backdrop-blur-xl border border-white/5 rounded-2xl p-5">
-              <div className="flex flex-col md:flex-row items-center justify-between gap-4 mb-4">
+              <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 mb-4">
                 <div className="flex-1">
                   <h3 className="text-base font-bold text-white mb-1">Organize Library</h3>
                   <p className="text-gray-400 text-xs leading-relaxed">
                     Scans source folders and organizes media into your library
                   </p>
+                  <label className="flex items-center gap-2 cursor-pointer mt-2.5 text-xs text-gray-300 hover:text-white select-none">
+                    <input
+                      type="checkbox"
+                      checked={excludeDownloading}
+                      onChange={(e) => setExcludeDownloading(e.target.checked)}
+                      className="rounded border-gray-700 bg-white/5 text-red-600 focus:ring-red-500 w-4 h-4 cursor-pointer accent-red-600"
+                    />
+                    <span>Exclude files that are still downloading (active torrents, .part, .crdownload, locked files)</span>
+                  </label>
                 </div>
                 <Button
                   onClick={handleSortFiles}
@@ -378,7 +400,7 @@ const Settings: React.FC = () => {
                       <h4 className={`font-bold text-sm mb-2 ${sortResults.errors.length > 0 ? 'text-red-500' : 'text-green-500'}`}>
                         {sortResults.errors.length > 0 ? 'Completed with Issues' : 'Success'}
                       </h4>
-                      <div className="flex gap-6 text-xs text-gray-300 mb-2">
+                      <div className="flex gap-6 text-xs text-gray-300 mb-2 flex-wrap">
                         <div className="flex flex-col">
                           <span className="text-gray-500 text-[10px] uppercase">Moved</span>
                           <span className="text-lg font-bold text-white">{sortResults.moved}</span>
@@ -387,6 +409,12 @@ const Settings: React.FC = () => {
                           <span className="text-gray-500 text-[10px] uppercase">Skipped</span>
                           <span className="text-lg font-bold text-white">{sortResults.skipped}</span>
                         </div>
+                        {sortResults.skippedDownloading !== undefined && sortResults.skippedDownloading > 0 && (
+                          <div className="flex flex-col">
+                            <span className="text-amber-500 text-[10px] uppercase font-semibold">Still Downloading</span>
+                            <span className="text-lg font-bold text-amber-400">{sortResults.skippedDownloading}</span>
+                          </div>
+                        )}
                       </div>
                       {sortResults.errors.length > 0 && (
                         <div className="mt-3 bg-black/20 rounded-lg p-3">
@@ -431,6 +459,17 @@ const Settings: React.FC = () => {
               </Button>
             </div>
           </section>
+
+          {/* App Info Footer */}
+          <div className="pt-6 border-t border-white/5 text-center text-xs text-gray-500 flex flex-col sm:flex-row items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <div className="w-5 h-5 rounded overflow-hidden bg-black border border-white/15 flex items-center justify-center shadow">
+                <img src="/logo.png" alt="THEORA" className="w-full h-full object-cover" />
+              </div>
+              <span className="font-semibold text-gray-400">THEORA <span className="font-normal text-gray-600">v1.0.0</span></span>
+            </div>
+            <span>© 2026 <strong className="text-gray-400 font-medium">Benjamin Inc.</strong> All rights reserved.</span>
+          </div>
         </div>
       </div>
     </div>

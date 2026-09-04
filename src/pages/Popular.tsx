@@ -1226,7 +1226,7 @@ const Popular: React.FC = () => {
             </div>
           )}
 
-          {/* CineStream Gazette: Premium Editorial Experience */}
+          {/* Theora Gazette: Premium Editorial Experience */}
           {(newsArticles.length > 0 || loadingNews || analyzingGenres) && (
             <div className="relative group/gazette">
               <div className="absolute -inset-4 bg-red-600/5 rounded-[3rem] blur-3xl opacity-0 group-hover/gazette:opacity-100 transition-opacity duration-1000"></div>
@@ -1247,7 +1247,7 @@ const Popular: React.FC = () => {
                     </div>
                   </div>
                   <h2 className="text-6xl lg:text-7xl font-black italic uppercase tracking-tighter leading-none mb-4">
-                    CineStream <span className="text-red-600">Gazette</span>
+                    Theora <span className="text-red-600">Gazette</span>
                   </h2>
                   <p className="text-gray-400 text-sm font-bold tracking-[0.3em] uppercase">Entertainment Intelligence Hub</p>
                   <div className="flex items-center justify-center gap-4 mt-6">

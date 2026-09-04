@@ -39,9 +39,11 @@ export function parseMediaFilename(filename: string): ParsedMediaInfo {
     const titleRaw = standardMatch[1];
     const season = parseInt(standardMatch[2]);
     const episode = parseInt(standardMatch[3]);
+    const { title, year } = extractYearAndCleanTitle(titleRaw);
 
     return {
-      title: cleanMediaTitle(titleRaw),
+      title,
+      year,
       season,
       episode,
       type: 'series',
@@ -59,9 +61,11 @@ export function parseMediaFilename(filename: string): ParsedMediaInfo {
 
     // Remove the match from the name to find the title
     const titlePart = nameWithoutExt.replace(bracketedMatch[0], '');
+    const { title, year } = extractYearAndCleanTitle(titlePart);
 
     return {
-      title: cleanMediaTitle(titlePart),
+      title,
+      year,
       season,
       episode,
       type: 'series',
@@ -76,8 +80,10 @@ export function parseMediaFilename(filename: string): ParsedMediaInfo {
   if (animeMatch) {
     const possibleNum = parseInt(animeMatch[2]);
     if (possibleNum < 2000) {
+      const { title, year } = extractYearAndCleanTitle(animeMatch[1]);
       return {
-        title: cleanMediaTitle(animeMatch[1]),
+        title,
+        year,
         season: 1,
         episode: possibleNum,
         type: 'series',
@@ -91,8 +97,10 @@ export function parseMediaFilename(filename: string): ParsedMediaInfo {
   const verboseMatch = nameWithoutExt.match(verboseSeriesRegex);
 
   if (verboseMatch) {
+    const { title, year } = extractYearAndCleanTitle(verboseMatch[1]);
     return {
-      title: cleanMediaTitle(verboseMatch[1]),
+      title,
+      year,
       season: parseInt(verboseMatch[2]),
       episode: parseInt(verboseMatch[3]),
       type: 'series',
@@ -108,8 +116,10 @@ export function parseMediaFilename(filename: string): ParsedMediaInfo {
   if (numericSuffixMatch) {
     const epNum = parseInt(numericSuffixMatch[2]);
     if (epNum < 1000) {
+      const { title, year } = extractYearAndCleanTitle(numericSuffixMatch[1]);
       return {
-        title: cleanMediaTitle(numericSuffixMatch[1]),
+        title,
+        year,
         season: 1,
         episode: epNum,
         type: 'series',
@@ -136,12 +146,11 @@ export function parseMediaFilename(filename: string): ParsedMediaInfo {
   if (movieMatch) {
     const rawTitle = movieMatch[1];
     const year = parseInt(movieMatch[2]);
-    // We can check movieMatch[3] for quality info if needed in the future
 
     // Sanity check: valid year range
     if (year >= 1900 && year <= 2100) {
       return {
-        title: cleanMediaTitle(rawTitle),
+        title: stripYearFromTitle(cleanMediaTitle(rawTitle)),
         year,
         type: 'movie',
         ...metadata
@@ -151,10 +160,86 @@ export function parseMediaFilename(filename: string): ParsedMediaInfo {
 
   // 2. Fallback: No Series pattern, No Year pattern found.
   // Treat as simple movie title
+  const fallback = extractYearAndCleanTitle(nameWithoutExt);
   return {
-    title: cleanMediaTitle(nameWithoutExt),
+    title: fallback.title,
+    year: fallback.year,
     type: 'movie',
     ...metadata
+  };
+}
+
+/**
+ * Strips release year from a title while preserving standalone year titles (e.g. "1923", "1883", "2012").
+ */
+export function stripYearFromTitle(title: string): string {
+  if (!title) return '';
+  let cleaned = title.trim();
+
+  // If the entire title is just a 4-digit year (e.g. "1923", "1883", "2012"), keep it intact
+  if (/^(?:18\d{2}|19\d{2}|20\d{2})$/.test(cleaned)) {
+    return cleaned;
+  }
+
+  // 1. Remove bracketed or parenthesized years like "(2020)" or "[2024]"
+  const withoutBracketedYear = cleaned.replace(/\s*[([]\s*(?:18\d{2}|19\d{2}|20[0-3]\d)\s*[)\]]/gi, '');
+  if (withoutBracketedYear.trim().length > 0) {
+    cleaned = withoutBracketedYear;
+  }
+
+  // If what remains is just a standalone year title (e.g. "1923 (2022)" -> "1923"), keep it
+  if (/^(?:18\d{2}|19\d{2}|20\d{2})$/.test(cleaned.trim())) {
+    return cleaned.trim();
+  }
+
+  // 2. Remove trailing 4-digit release year separated by space, dot, underscore, or dash
+  // e.g. "Outer Banks 2020", "Tracker.2024", "Yellowstone_2018", "1923 2022"
+  const withoutTrailingYear = cleaned.replace(/[\s._-]+(?:18\d{2}|19\d{2}|20[0-3]\d)\s*$/gi, '');
+  if (withoutTrailingYear.trim().length > 0) {
+    cleaned = withoutTrailingYear;
+  }
+
+  // 3. Clean up any leftover duplicate spaces or punctuation
+  cleaned = cleaned
+    .replace(/[._]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/^[\s\-_.]+/, '')
+    .replace(/[\s\-_.]+$/, '')
+    .trim();
+
+  return cleaned || title.trim();
+}
+
+/**
+ * Extracts release year and clean title from raw title string.
+ */
+export function extractYearAndCleanTitle(rawTitle: string): { title: string; year?: number } {
+  let cleaned = cleanMediaTitle(rawTitle);
+  if (!cleaned) return { title: '' };
+
+  // If the whole title is just a year (e.g. "1923"), return it as title
+  if (/^(?:18\d{2}|19\d{2}|20\d{2})$/.test(cleaned)) {
+    return { title: cleaned, year: parseInt(cleaned) };
+  }
+
+  let extractedYear: number | undefined;
+
+  // Check for bracketed or parenthesized year: "(2020)" or "[2024]"
+  const bracketMatch = cleaned.match(/[([]\s*(18\d{2}|19\d{2}|20[0-3]\d)\s*[)\]]/i);
+  if (bracketMatch) {
+    extractedYear = parseInt(bracketMatch[1]);
+  } else {
+    // Check for trailing year: "Outer Banks 2020" or "Tracker 2024"
+    const trailingMatch = cleaned.match(/[\s._-]+(18\d{2}|19\d{2}|20[0-3]\d)\s*$/i);
+    if (trailingMatch) {
+      extractedYear = parseInt(trailingMatch[1]);
+    }
+  }
+
+  const finalTitle = stripYearFromTitle(cleaned);
+  return {
+    title: finalTitle,
+    year: extractedYear
   };
 }
 

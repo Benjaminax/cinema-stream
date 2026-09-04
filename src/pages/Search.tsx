@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Search as SearchIcon, X } from 'lucide-react';
+import { Search as SearchIcon, X, Sparkles, Film, Tv } from 'lucide-react';
 import MediaCard from '../components/media/MediaCard';
 import DetailsModal from '../components/media/DetailsModal';
 import { TMDBResult, Episode } from '../types/media';
@@ -8,6 +8,7 @@ import { addRecentlyWatched } from '../utils/recentlyWatched';
 import { useNetworkStatus } from '../hooks/useNetworkStatus';
 import NoInternetConnection from '../components/offline/NoInternetConnection';
 import { playMediaWithTracking } from '../utils/mediaPlayback';
+import { getPersistentRecommendations, recordMediaInteraction } from '../utils/persistentWatchHistory';
 
 const Search: React.FC = () => {
   const [query, setQuery] = useState('');
@@ -15,10 +16,15 @@ const Search: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [selectedItem, setSelectedItem] = useState<TMDBResult | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [searchType, setSearchType] = useState<'movie' | 'tv' | 'multi'>('multi');
+  const [searchType, setSearchType] = useState<'multi' | 'movie' | 'tv'>('multi');
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
   const [showRecentSearches, setShowRecentSearches] = useState(false);
   const [autoPlayTrailer, setAutoPlayTrailer] = useState(false);
+  const [suggestedMovies, setSuggestedMovies] = useState<TMDBResult[]>([]);
+  const [suggestedSeries, setSuggestedSeries] = useState<TMDBResult[]>([]);
+  const [seedTitles, setSeedTitles] = useState<string[]>([]);
+  const [loadingSuggestions, setLoadingSuggestions] = useState(true);
+  const [suggestionTab, setSuggestionTab] = useState<'all' | 'movie' | 'tv'>('all');
   const { isOnline, retry } = useNetworkStatus();
 
   // Load recent searches from localStorage on component mount
@@ -44,6 +50,36 @@ const Search: React.FC = () => {
         console.error('Error clearing corrupted recent searches:', clearError);
       }
     }
+  }, []);
+
+  // Fetch suggestions based on persistent watch history
+  useEffect(() => {
+    let isMounted = true;
+    const loadRecs = async () => {
+      setLoadingSuggestions(true);
+      try {
+        const data = await getPersistentRecommendations();
+        if (isMounted) {
+          setSuggestedMovies(data.suggestedMovies);
+          setSuggestedSeries(data.suggestedSeries);
+          setSeedTitles(data.seedTitles);
+        }
+      } catch (err) {
+        console.error('Error loading search suggestions:', err);
+      } finally {
+        if (isMounted) setLoadingSuggestions(false);
+      }
+    };
+    loadRecs();
+
+    const handleHistoryUpdated = () => {
+      loadRecs();
+    };
+    window.addEventListener('theora-watch-history-updated', handleHistoryUpdated);
+    return () => {
+      isMounted = false;
+      window.removeEventListener('theora-watch-history-updated', handleHistoryUpdated);
+    };
   }, []);
 
   // Save search to recent searches
@@ -113,6 +149,7 @@ const Search: React.FC = () => {
 
   const handleCardClick = (item: TMDBResult) => {
     if (!item) return;
+    recordMediaInteraction(item);
     saveRecentSearch(query); // Save search when result is clicked
     setSelectedItem(item);
     setAutoPlayTrailer(false); // Don't auto-play trailer for "more info" clicks
@@ -121,6 +158,7 @@ const Search: React.FC = () => {
 
   const handlePlay = async (item: TMDBResult | Episode) => {
     if (!item) return;
+    recordMediaInteraction(item);
     saveRecentSearch(query); // Save search when played
 
     // Check if it's an episode with a file path
@@ -409,6 +447,138 @@ const Search: React.FC = () => {
               </div>
               <h3 className="text-xl font-bold text-white mb-2">No matches found</h3>
               <p className="text-gray-400 text-sm">We couldn't find anything matching "{query}"</p>
+            </div>
+          ) : !query && !loading ? (
+            <div className="w-full space-y-10 animate-in fade-in slide-in-from-bottom-6 duration-700 pb-16">
+              {/* Suggestions Header & Filter Pills */}
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-white/10 pb-4">
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 rounded-xl bg-red-600/20 text-red-500 border border-red-600/30">
+                    <Sparkles className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h2 className="text-xl md:text-2xl font-bold text-white tracking-tight">
+                      {seedTitles.length > 0
+                        ? 'Suggested For You'
+                        : 'Recommended Stories'}
+                    </h2>
+                    <p className="text-xs md:text-sm text-gray-400 mt-0.5">
+                      {seedTitles.length > 0
+                        ? `Personalized based on what you've watched (${seedTitles.slice(0, 3).join(', ')})`
+                        : 'Top trending movies and series picked for your taste'}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Sub-tabs: All, Movies, TV Series */}
+                <div className="flex bg-white/5 border border-white/10 rounded-xl p-1 gap-1 w-fit">
+                  <button
+                    onClick={() => setSuggestionTab('all')}
+                    className={`px-4 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                      suggestionTab === 'all'
+                        ? 'bg-red-600 text-white shadow-md'
+                        : 'text-gray-400 hover:text-white'
+                    }`}
+                  >
+                    All Picks
+                  </button>
+                  <button
+                    onClick={() => setSuggestionTab('movie')}
+                    className={`px-4 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all ${
+                      suggestionTab === 'movie'
+                        ? 'bg-red-600 text-white shadow-md'
+                        : 'text-gray-400 hover:text-white'
+                    }`}
+                  >
+                    <Film className="w-3.5 h-3.5" />
+                    Movies
+                  </button>
+                  <button
+                    onClick={() => setSuggestionTab('tv')}
+                    className={`px-4 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all ${
+                      suggestionTab === 'tv'
+                        ? 'bg-red-600 text-white shadow-md'
+                        : 'text-gray-400 hover:text-white'
+                    }`}
+                  >
+                    <Tv className="w-3.5 h-3.5" />
+                    Series
+                  </button>
+                </div>
+              </div>
+
+              {loadingSuggestions ? (
+                <div className="flex flex-col items-center justify-center py-16">
+                  <div className="w-10 h-10 border-2 border-red-600 border-t-transparent rounded-full animate-spin"></div>
+                  <p className="mt-3 text-xs text-gray-500">Loading personalized suggestions...</p>
+                </div>
+              ) : (
+                <div className="space-y-10">
+                  {/* Movies Row/Grid */}
+                  {(suggestionTab === 'all' || suggestionTab === 'movie') && suggestedMovies.length > 0 && (
+                    <div className="space-y-4">
+                      <div className="flex items-center gap-2">
+                        <Film className="w-4 h-4 text-red-500" />
+                        <h3 className="text-lg font-bold text-white tracking-tight">Suggested Movies</h3>
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-5">
+                        {suggestedMovies.slice(0, suggestionTab === 'movie' ? 18 : 12).map((item, index) => (
+                          <div
+                            key={item.id}
+                            className="animate-in fade-in zoom-in duration-300"
+                            style={{ animationDelay: `${index * 25}ms` }}
+                          >
+                            <MediaCard
+                              item={item}
+                              onClick={(m) => {
+                                recordMediaInteraction(m, 'movie');
+                                handleCardClick(m);
+                              }}
+                              onPlay={(m) => {
+                                recordMediaInteraction(m, 'movie');
+                                handlePlay(m);
+                              }}
+                              className="w-full"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* TV Series Row/Grid */}
+                  {(suggestionTab === 'all' || suggestionTab === 'tv') && suggestedSeries.length > 0 && (
+                    <div className="space-y-4">
+                      <div className="flex items-center gap-2">
+                        <Tv className="w-4 h-4 text-red-500" />
+                        <h3 className="text-lg font-bold text-white tracking-tight">Suggested Series</h3>
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-5">
+                        {suggestedSeries.slice(0, suggestionTab === 'tv' ? 18 : 12).map((item, index) => (
+                          <div
+                            key={item.id}
+                            className="animate-in fade-in zoom-in duration-300"
+                            style={{ animationDelay: `${index * 25}ms` }}
+                          >
+                            <MediaCard
+                              item={item}
+                              onClick={(s) => {
+                                recordMediaInteraction(s, 'tv');
+                                handleCardClick(s);
+                              }}
+                              onPlay={(s) => {
+                                recordMediaInteraction(s, 'tv');
+                                handlePlay(s);
+                              }}
+                              className="w-full"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           ) : null}
         </div>

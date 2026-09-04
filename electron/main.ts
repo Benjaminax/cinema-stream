@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import { exec, spawn } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { parseMediaFilename, cleanMediaTitle } from '../src/utils/mediaParser.js'
+import { parseMediaFilename, cleanMediaTitle, stripYearFromTitle } from '../src/utils/mediaParser.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -363,8 +363,10 @@ function createWindow() {
   }
 
   win = new BrowserWindow({
-    icon: path.join(process.env.VITE_PUBLIC || '', 'app-portal.png'),
-    title: 'CineStream',
+    icon: process.platform === 'win32'
+      ? path.join(process.env.VITE_PUBLIC || '', 'icon.ico')
+      : path.join(process.env.VITE_PUBLIC || '', 'logo.png'),
+    title: 'THEORA',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       webviewTag: true, // Re-enable <webview>
@@ -1086,19 +1088,116 @@ interface SortOptions {
   moviesFolder: string;
   seriesFolder: string;
   mediaExtensions: string[];
+  excludeDownloading?: boolean;
 }
 
 interface SortResults {
   moved: number;
   skipped: number;
+  skippedDownloading: number;
   errors: string[];
+}
+
+// Incomplete / in-progress download extensions
+const INCOMPLETE_EXTENSIONS = new Set([
+  '.!ut', '.!bt', '.part', '.crdownload', '.download', '.aria2',
+  '.opdownload', '.tmp', '.partial', '.downloading', '.unconfirmed',
+  '.unfinished', '.incomplete'
+]);
+
+// Folder names commonly used by torrent clients and download managers for in-progress files
+const INCOMPLETE_FOLDER_NAMES = new Set([
+  'incomplete', '.incomplete', 'downloading', '.downloading',
+  'in-progress', 'inprogress', 'temp', 'tmp', '.tmp'
+]);
+
+/**
+ * Robustly checks if a file is still downloading or locked by an active downloader
+ */
+async function isFileStillDownloading(filePath: string): Promise<{ isDownloading: boolean; reason?: string }> {
+  try {
+    const fileName = path.basename(filePath);
+    const fileExt = path.extname(filePath).toLowerCase();
+    const dir = path.dirname(filePath);
+
+    // 1. Direct incomplete extension check
+    if (INCOMPLETE_EXTENSIONS.has(fileExt)) {
+      return { isDownloading: true, reason: `Incomplete download extension (${fileExt})` };
+    }
+
+    // 2. Filename contains temporary download indicators
+    if (/\.(part|crdownload|!ut|!bt|aria2|downloading|unconfirmed)(\.|$)/i.test(fileName)) {
+      return { isDownloading: true, reason: 'Filename indicates active download' };
+    }
+
+    // 3. Parent directory check (e.g. Incomplete or Temp downloads directory)
+    const normalizedParts = filePath.split(/[/\\]/);
+    for (const part of normalizedParts) {
+      if (INCOMPLETE_FOLDER_NAMES.has(part.toLowerCase())) {
+        return { isDownloading: true, reason: `File is in in-progress folder (${part})` };
+      }
+    }
+
+    // 4. Companion / Sibling download marker check
+    // Torrent clients (qBittorrent, uTorrent, Transmission) and download managers often place a companion marker
+    // e.g. "Movie.mkv.!ut", "Movie.mkv.part", "Movie.mkv.aria2"
+    for (const incExt of INCOMPLETE_EXTENSIONS) {
+      const sibling1 = path.join(dir, `${fileName}${incExt}`);
+      if (fs.existsSync(sibling1)) {
+        return { isDownloading: true, reason: `Active download companion exists (${fileName}${incExt})` };
+      }
+    }
+    const nameWithoutExt = path.parse(fileName).name;
+    for (const incExt of INCOMPLETE_EXTENSIONS) {
+      const sibling2 = path.join(dir, `${nameWithoutExt}${incExt}`);
+      if (fs.existsSync(sibling2)) {
+        return { isDownloading: true, reason: `Active download companion exists (${nameWithoutExt}${incExt})` };
+      }
+    }
+
+    // 5. Stat checks: 0-byte placeholder
+    const stat1 = await fs.promises.stat(filePath);
+    if (stat1.size === 0) {
+      return { isDownloading: true, reason: 'File is 0 bytes (pre-allocated placeholder)' };
+    }
+
+    // 6. Active write lock check (exclusive read/write access attempt)
+    // On Windows, when an active downloader (browser, torrent client, etc.) has a file open with write access,
+    // attempting to open it with 'r+' (read-write) fails with EBUSY, EPERM, or EACCES.
+    try {
+      const fileHandle = await fs.promises.open(filePath, 'r+');
+      await fileHandle.close();
+    } catch (lockError: any) {
+      if (lockError && ['EBUSY', 'EPERM', 'EACCES'].includes(lockError.code)) {
+        return { isDownloading: true, reason: `File is locked by active downloading process (${lockError.code})` };
+      }
+    }
+
+    // 7. Active growth / Recent modification check
+    // If the file was modified in the last 20 seconds, check if its size or timestamp is actively changing
+    const now = Date.now();
+    const ageMs = now - stat1.mtimeMs;
+    if (ageMs < 20000) {
+      await new Promise(resolve => setTimeout(resolve, 350));
+      const stat2 = await fs.promises.stat(filePath);
+      if (stat2.size !== stat1.size || stat2.mtimeMs !== stat1.mtimeMs) {
+        return { isDownloading: true, reason: 'File size or modification timestamp is actively changing' };
+      }
+    }
+
+    return { isDownloading: false };
+  } catch (err) {
+    // If checking stat fails, treat as inaccessible / in-progress to be safe
+    return { isDownloading: true, reason: `File access check failed: ${err instanceof Error ? err.message : String(err)}` };
+  }
 }
 
 async function sortFiles(event: any, options: SortOptions): Promise<SortResults> {
   const { downloadsFolders, moviesFolder, seriesFolder, mediaExtensions } = options;
-  const results: SortResults = { moved: 0, skipped: 0, errors: [] };
+  const excludeDownloading = options.excludeDownloading !== false; // defaults to true
+  const results: SortResults = { moved: 0, skipped: 0, skippedDownloading: 0, errors: [] };
 
-  console.log('🎯 Starting file sorting process');
+  console.log('🎯 Starting file sorting process (excludeDownloading:', excludeDownloading, ')');
 
   // Validate paths
   for (const folder of downloadsFolders) {
@@ -1153,21 +1252,38 @@ async function sortFiles(event: any, options: SortOptions): Promise<SortResults>
     const fileName = path.basename(filePath);
 
     try {
+      // Check if file is still downloading
+      if (excludeDownloading) {
+        const downloadCheck = await isFileStillDownloading(filePath);
+        if (downloadCheck.isDownloading) {
+          console.log(`⏳ Skipping active download: ${fileName} (${downloadCheck.reason})`);
+          results.skipped++;
+          results.skippedDownloading++;
+          event.sender.send('sorting-progress', {
+            current: i + 1,
+            total: allFiles.length,
+            status: `Skipping active download: ${fileName}`
+          });
+          continue;
+        }
+      }
+
       // Parse the media file using unified parser
       const parsed = parseMediaFilename(fileName);
       let destinationPath: string;
       let isSeries = false;
 
       if (parsed.type === 'series' && parsed.season) {
-        // It's a series episode
+        // It's a series episode - folder name strictly has no year
         isSeries = true;
-        const seasonFolder = path.join(seriesFolder, parsed.title, `Season ${parsed.season}`);
+        const cleanShowTitle = stripYearFromTitle(parsed.title);
+        const seasonFolder = path.join(seriesFolder, cleanShowTitle, `Season ${parsed.season}`);
         await fs.promises.mkdir(seasonFolder, { recursive: true });
         destinationPath = path.join(seasonFolder, fileName);
-        console.log(`📺 Series: ${parsed.title} S${parsed.season}E${parsed.episode}`);
+        console.log(`📺 Series: ${cleanShowTitle} S${parsed.season}E${parsed.episode}`);
       } else {
         // It's a movie
-        const movieTitle = parsed.title;
+        const movieTitle = stripYearFromTitle(parsed.title);
         destinationPath = path.join(moviesFolder, fileName);
         console.log(`🎬 Movie: ${movieTitle}`);
       }
@@ -1186,9 +1302,15 @@ async function sortFiles(event: any, options: SortOptions): Promise<SortResults>
         results.moved++;
       }
 
-    } catch (error) {
-      console.error(`❌ Error processing ${fileName}:`, error);
-      results.errors.push(`Error processing ${fileName}: ${error instanceof Error ? error.message : String(error)}`);
+    } catch (error: any) {
+      if (error && ['EBUSY', 'EPERM', 'EACCES'].includes(error.code)) {
+        console.warn(`⏳ File is locked / in use by another application (skipped as active download): ${fileName}`);
+        results.skipped++;
+        results.skippedDownloading++;
+      } else {
+        console.error(`❌ Error processing ${fileName}:`, error);
+        results.errors.push(`Error processing ${fileName}: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
 
     // Update progress
@@ -1228,10 +1350,19 @@ async function scanDirectoryForMediaFiles(dirPath: string, mediaExtensions: stri
 
         try {
           if (item.isDirectory()) {
+            // Skip in-progress download directories
+            if (INCOMPLETE_FOLDER_NAMES.has(item.name.toLowerCase())) {
+              console.log(`⏳ Skipping in-progress directory in organizer: ${fullPath}`);
+              continue;
+            }
             // Recursively scan subdirectory
             await scanRecursive(fullPath);
           } else if (item.isFile()) {
             const ext = path.extname(item.name).toLowerCase();
+            // Skip incomplete extensions directly
+            if (INCOMPLETE_EXTENSIONS.has(ext)) {
+              continue;
+            }
             if (mediaExtensions.includes(ext) && !seenFiles.has(fullPath)) {
               results.push(fullPath);
               seenFiles.add(fullPath);
@@ -1319,7 +1450,7 @@ async function isPotentialDuplicate(sourcePath: string, destPath: string, librar
       return false; // Already in library, let the caller handle it if needed
     }
 
-    const cleanedSourceTitle = cleanMediaTitle(path.basename(sourcePath, path.extname(sourcePath)));
+    const cleanedSourceTitle = stripYearFromTitle(cleanMediaTitle(path.basename(sourcePath, path.extname(sourcePath))));
     const existingFiles = await scanDirectoryForMediaFilesRecursive(libraryFolder, ['.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v']);
 
     for (const existingFile of existingFiles) {
@@ -1336,7 +1467,7 @@ async function isPotentialDuplicate(sourcePath: string, destPath: string, librar
         if (sizeDiff <= 0.1) {
           // If the size is very similar, parse filenames to avoid false positives across episodes
           const existingFileName = path.basename(existingFile, path.extname(existingFile));
-          const cleanedExistingTitle = cleanMediaTitle(existingFileName);
+          const cleanedExistingTitle = stripYearFromTitle(cleanMediaTitle(existingFileName));
 
           try {
             const srcParsed = parseMediaFilename(path.basename(sourcePath));

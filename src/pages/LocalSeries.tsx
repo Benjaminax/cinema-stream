@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Tv, RefreshCw, Search, Filter, X, ChevronDown } from 'lucide-react';
 import { TMDBResult } from '../types/media';
-import { LocalMediaFile } from '../utils/localMedia';
+import { LocalMediaFile, stripYearFromTitle } from '../utils/localMedia';
 import { searchMedia, getImageUrl, getBackdropUrl, getIMDbRating, getDetails } from '../api/tmdb';
 import DetailsModal from '../components/media/DetailsModal';
 import { libraryCache } from '../utils/libraryCache';
 import { addRecentlyWatched, getRecentlyWatched, getResumeItemByParent, normalizePath } from '../utils/recentlyWatched';
 import { playMediaWithTracking } from '../utils/mediaPlayback';
+import { recordMediaInteraction } from '../utils/persistentWatchHistory';
 import { GENRE_NAME_MAP } from '../utils/genrePreferences';
 import '../types/electron';
 
@@ -120,7 +121,8 @@ const LocalSeries: React.FC = () => {
                     }
 
                     // Search TMDB if not cached
-                    const searchResults = await searchMedia(seriesDir.name, 'tv');
+                    const cleanSeriesName = stripYearFromTitle(seriesDir.name);
+                    const searchResults = await searchMedia(cleanSeriesName, 'tv');
                     const tmdbSeries = searchResults.results?.[0];
 
                     if (tmdbSeries) {
@@ -190,6 +192,9 @@ const LocalSeries: React.FC = () => {
                         // Reload series from cache and update state so UI gets updated image paths
                         const updatedSeries = Object.values(libraryCache["data"]?.series || {});
                         setSeries(updatedSeries);
+
+                        // Persist permanently in theora_persistent_watch_history so suggestions survive file deletion
+                        updatedSeries.forEach(s => recordMediaInteraction(s, 'tv', true));
         } catch (error) {
             console.error('Error loading local series:', error);
             setSeries([]);

@@ -185,3 +185,21 @@ export interface SearchResponse {
   total_pages: number;
   total_results: number;
 }
+
+export interface Franchise {
+  id: number;
+  name: string;
+  displayTitle: string;
+  tagline: string;
+  overview: string;
+  poster_path: string | null;
+  backdrop_path: string | null;
+  titlesCount: number;
+  yearRange: string;
+  avgRating: string;
+  totalVotes: number;
+  formattedVotes: string;
+  posters: string[];
+  parts: TMDBResult[];
+  genres?: string[];
+}

@@ -8,6 +8,7 @@ import { addRecentlyWatched, getRecentlyWatched, normalizePath } from '../utils/
 import { libraryCache } from '../utils/libraryCache';
 import { GENRE_NAME_MAP } from '../utils/genrePreferences';
 import { playMediaWithTracking } from '../utils/mediaPlayback';
+import { recordMediaInteraction } from '../utils/persistentWatchHistory';
 import '../types/electron';
 
 const PLACEHOLDER = new URL('/placeholder.png', import.meta.url).href;
@@ -225,7 +226,11 @@ const LocalMovies: React.FC = () => {
         local_paths: m.local_paths
       })));
 
-      setMovies(Array.from(groupedMovies.values()));
+      const finalMovies = Array.from(groupedMovies.values());
+      setMovies(finalMovies);
+
+      // Persist permanently in theora_persistent_watch_history so suggestions survive file deletion
+      finalMovies.forEach(m => recordMediaInteraction(m, 'movie', true));
     } catch (error) {
       console.error('Error loading local movies:', error);
     } finally {

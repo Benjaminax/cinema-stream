@@ -5,7 +5,9 @@ const pngToIco = require('png-to-ico');
 (async () => {
   try {
     const cwd = process.cwd();
-    const src = path.join(cwd, 'dist', 'app-portal.png');
+    const src = fs.existsSync(path.join(cwd, 'public', 'icon-256.png'))
+      ? path.join(cwd, 'public', 'icon-256.png')
+      : path.join(cwd, 'dist', 'app-portal.png');
     const outDir = path.join(cwd, 'public');
     const out = path.join(outDir, 'icon.ico');
 
@@ -18,6 +20,9 @@ const pngToIco = require('png-to-ico');
 
     const buf = await pngToIco(src);
     fs.writeFileSync(out, buf);
+    if (fs.existsSync(path.join(cwd, 'dist'))) {
+      fs.writeFileSync(path.join(cwd, 'dist', 'icon.ico'), buf);
+    }
     console.log('Wrote icon:', out);
   } catch (err) {
     console.error(err);

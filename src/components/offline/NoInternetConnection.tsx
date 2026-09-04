@@ -55,9 +55,14 @@ const NoInternetConnection: React.FC<NoInternetConnectionProps> = ({
         </div>
 
         {/* Subtle branding */}
-        <p className="text-sm text-gray-600 mt-8">
-          CINESTREAM • Entertainment Platform
-        </p>
+        <div className="flex items-center justify-center gap-2 mt-8">
+          <div className="w-5 h-5 rounded overflow-hidden bg-black border border-white/15 flex items-center justify-center shadow">
+            <img src="/logo.png" alt="THEORA" className="w-full h-full object-cover" />
+          </div>
+          <p className="text-sm text-gray-500 font-medium">
+            THEORA • Benjamin Inc.
+          </p>
+        </div>
       </div>
     </div>
   );
