@@ -7,6 +7,7 @@ import DetailsModal from '../components/media/DetailsModal';
 import { useNetworkStatus } from '../hooks/useNetworkStatus';
 import NoInternetConnection from '../components/offline/NoInternetConnection';
 import { playMediaWithTracking } from '../utils/mediaPlayback';
+import { playOnlineStream } from '../utils/stream';
 
 const MyList: React.FC = () => {
     const [list, setList] = useState<TMDBResult[]>([]);
@@ -47,18 +48,7 @@ const MyList: React.FC = () => {
                 window.electronAPI.openFile(item.local_path);
             }
         } else {
-            const isEpisode = 'season' in item && 'episode' in item;
-            const title = isEpisode
-                ? ((item as any).seriesTitle || selectedItem?.name || selectedItem?.title || item.title || '')
-                : ((item as TMDBResult).title || (item as TMDBResult).name || '');
-            const searchUrl = `https://yflix.to/browser?keyword=${title.trim().replace(/\s+/g, '+')}`;
-            if (window.electronAPI?.openYFlixWindow) {
-                window.electronAPI.openYFlixWindow(searchUrl, title);
-            } else if (window.electronAPI?.openExternal) {
-                window.electronAPI.openExternal(searchUrl);
-            } else {
-                window.open(searchUrl, '_blank');
-            }
+            playOnlineStream(item, selectedItem);
         }
     };
 

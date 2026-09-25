@@ -1005,7 +1005,7 @@ const DetailsModal: React.FC<DetailsModalProps> = ({ item, isOpen, onClose, auto
             <div className="absolute bottom-10 left-10 right-10 z-10">
               <h1 className="text-4xl md:text-6xl font-black text-white mb-6 drop-shadow-2xl">{displayTitle}</h1>
               <div className="flex items-center gap-4">
-                {onPlay && currentItem && !isTV && !hideMainPlay && (
+                {onPlay && currentItem && !hideMainPlay && (
                   <button onClick={async () => {
                     try {
                       await onPlay?.(currentItem as TMDBResult);
@@ -1013,7 +1013,9 @@ const DetailsModal: React.FC<DetailsModalProps> = ({ item, isOpen, onClose, auto
                       console.error('Play handler threw an error:', err);
                       setPlaybackError(err?.message || 'Failed to start playback.');
                     }
-                  }} className="flex items-center gap-3 px-10 py-3 bg-white text-black rounded-lg hover:bg-zinc-200 transition-all font-bold text-xl active:scale-95"><Play fill="black" /> Play</button>
+                  }} className="flex items-center gap-3 px-8 py-3 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-all font-bold text-lg active:scale-95 shadow-lg shadow-red-950/40">
+                    <Play fill="white" className="h-5 w-5" /> {currentItem.local_path ? 'Play' : (isTV ? 'Stream S1 E1' : 'Stream Now')}
+                  </button>
                 )} 
 
                 {isTV && currentPlayingEpisode && nextEpisode && (

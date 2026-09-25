@@ -19,6 +19,7 @@ import { getMyList } from '../utils/myList';
 import { useNetworkStatus } from '../hooks/useNetworkStatus';
 import NoInternetConnection from '../components/offline/NoInternetConnection';
 import { playMediaWithTracking } from '../utils/mediaPlayback';
+import { playOnlineStream } from '../utils/stream';
 
 // News API types
 interface NewsArticle {
@@ -230,18 +231,7 @@ const Popular: React.FC = () => {
         window.electronAPI.openFile(item.local_path);
       }
     } else {
-      const isEpisode = 'season' in item && 'episode' in item;
-      const title = isEpisode
-        ? ((item as any).seriesTitle || selectedMedia?.name || selectedMedia?.title || item.title || '')
-        : ((item as TMDBResult).title || (item as TMDBResult).name || '');
-      const searchUrl = `https://yflix.to/browser?keyword=${title.trim().replace(/\s+/g, '+')}`;
-      if (window.electronAPI?.openYFlixWindow) {
-        window.electronAPI.openYFlixWindow(searchUrl, title);
-      } else if (window.electronAPI?.openExternal) {
-        window.electronAPI.openExternal(searchUrl);
-      } else {
-        window.open(searchUrl, '_blank');
-      }
+      playOnlineStream(item, selectedMedia);
     }
   };
 

@@ -12,7 +12,6 @@ out/
 .env.local
 .env.production
 .env.staging
-android-app/gradle.properties
 
 # Operating System
 .DS_Store

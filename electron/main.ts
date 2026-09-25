@@ -685,37 +685,50 @@ ipcMain.handle('open-trailer-window', async (event, { url, title }: { url: strin
   }
 });
 
-ipcMain.handle('open-yflix-window', async (event, { url, title }: { url: string; title: string }) => {
-  console.log('🌐 Main process: Opening YFlix browser:', url);
+const handleOpenStreamWindow = async (url: string, title: string) => {
+  console.log('🌐 Main process: Opening streaming window:', url);
   try {
-    const yflixWindow = new BrowserWindow({
+    const streamWindow = new BrowserWindow({
       width: 1400,
       height: 900,
-      title: title || 'YFlix Browser',
+      title: title || 'THEORA Stream Player',
       autoHideMenuBar: true,
       backgroundColor: '#000000',
       webPreferences: {
         nodeIntegration: false,
         contextIsolation: true,
         webSecurity: true,
-        // Using a distinct partition for YFlix to isolate storage and cookies
-        partition: 'persist:yflix',
+        // Using a distinct partition for streaming to isolate storage and cookies
+        partition: 'persist:theorastream',
       },
     });
 
     // Modern Chrome User-Agent highly compatible with streaming sites
-    yflixWindow.webContents.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
+    streamWindow.webContents.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
 
-    yflixWindow.loadURL(url);
-    yflixWindow.setMenu(null);
+    // Block unwanted ad popups/windows triggered by stream embeds
+    streamWindow.webContents.setWindowOpenHandler(({ url: popupUrl }) => {
+      console.log('🛑 Blocking popup in stream window:', popupUrl);
+      return { action: 'deny' };
+    });
 
-    // Optional: show a loading indicator or handle errors
-    yflixWindow.webContents.on('did-fail-load', (e, code, desc) => {
-      console.warn(`🌐 YFlix load failed: ${desc} (${code})`);
+    streamWindow.loadURL(url);
+    streamWindow.setMenu(null);
+
+    streamWindow.webContents.on('did-fail-load', (e, code, desc) => {
+      console.warn(`🌐 Stream load failed: ${desc} (${code})`);
     });
   } catch (error) {
-    console.error('🌐 Main process: Error opening YFlix window:', error);
+    console.error('🌐 Main process: Error opening stream window:', error);
   }
+};
+
+ipcMain.handle('open-stream-window', async (event, { url, title }: { url: string; title: string }) => {
+  await handleOpenStreamWindow(url, title);
+});
+
+ipcMain.handle('open-yflix-window', async (event, { url, title }: { url: string; title: string }) => {
+  await handleOpenStreamWindow(url, title);
 });
 
 // Return the absolute path to the trailer webview preload script so the renderer can attach it to <webview>

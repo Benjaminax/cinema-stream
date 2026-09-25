@@ -12,6 +12,7 @@ import { getImageUrl } from '../api/tmdb';
 import { useNetworkStatus } from '../hooks/useNetworkStatus';
 import NoInternetConnection from '../components/offline/NoInternetConnection';
 import { getPersistentRecommendations } from '../utils/persistentWatchHistory';
+import { playOnlineStream } from '../utils/stream';
 
 const Home: React.FC<{ isActive?: boolean }> = ({ isActive = true }) => {
   const [franchises, setFranchises] = useState<Franchise[]>([]);
@@ -612,17 +613,9 @@ const Home: React.FC<{ isActive?: boolean }> = ({ isActive = true }) => {
       return;
     }
 
-    // Episode object with no local file — search on yflix using series title
+    // Episode object with no local file — stream directly (VidSrc embed matching APK)
     if ('season' in item && 'episode' in item) {
-      const seriesTitle = (item as any).seriesTitle || selectedItem?.name || selectedItem?.title || (item as any).title || '';
-      const searchUrl = `https://yflix.to/browser?keyword=${seriesTitle.trim().replace(/\s+/g, '+')}`;
-      if (window.electronAPI?.openYFlixWindow) {
-        window.electronAPI.openYFlixWindow(searchUrl, seriesTitle);
-      } else if (window.electronAPI?.openExternal) {
-        window.electronAPI.openExternal(searchUrl);
-      } else {
-        window.open(searchUrl, '_blank');
-      }
+      playOnlineStream(item, selectedItem);
       return;
     }
 
@@ -660,16 +653,8 @@ const Home: React.FC<{ isActive?: boolean }> = ({ isActive = true }) => {
       return;
     }
 
-    // For TMDB items without local files, search on yflix
-    const title = tmdbItem.title || tmdbItem.name || '';
-    const searchUrl = `https://yflix.to/browser?keyword=${title.trim().replace(/\s+/g, '+')}`;
-    if (window.electronAPI?.openYFlixWindow) {
-      window.electronAPI.openYFlixWindow(searchUrl, title);
-    } else if (window.electronAPI?.openExternal) {
-      window.electronAPI.openExternal(searchUrl);
-    } else {
-      window.open(searchUrl, '_blank');
-    }
+    // For TMDB items without local files, stream directly (VidSrc embed matching APK)
+    playOnlineStream(tmdbItem, selectedItem);
   };
 
   const handleMoreInfo = (item: TMDBResult) => {

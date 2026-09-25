@@ -1,4 +1,4 @@
-﻿declare global {
+declare global {
   interface ElectronAPI {
     scanDirectory: (dirPath: string) => Promise<import('../utils/localMedia').LocalMediaFile[]>;
     openFile: (filePath: string, startTime?: number) => Promise<{ success: boolean; error?: string }>;
@@ -20,6 +20,7 @@
     downloadImage: (url: string, fileName: string, options?: { overwrite?: boolean }) => Promise<string | null>;
     openExternal: (url: string) => Promise<void>;
     openTrailerWindow: (options: { url: string; title: string }) => Promise<void>;
+    openStreamWindow: (url: string, title: string) => Promise<void>;
     openYFlixWindow: (url: string, title: string) => Promise<void>;
     getTrailerPreloadPath: () => Promise<string>;
     getFileStats: (filePath: string) => Promise<{ mtimeMs?: number; birthtimeMs?: number; size?: number }>;
